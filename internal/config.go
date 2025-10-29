@@ -45,6 +45,8 @@ type CurdConfig struct {
 	StoragePath              string   `config:"StoragePath"`
 	AnimeNameLanguage        string   `config:"AnimeNameLanguage"`
 	MenuOrder                string   `config:"MenuOrder"`
+	TrackingService          string   `config:"TrackingService"`
+	DualTracking             bool     `config:"DualTracking"`
 	PercentageToMarkComplete int      `config:"PercentageToMarkComplete"`
 	NextEpisodePrompt        bool     `config:"NextEpisodePrompt"`
 	SkipOp                   bool     `config:"SkipOp"`
@@ -71,6 +73,8 @@ func defaultConfigMap() map[string]string {
 		"AnimeNameLanguage":        "english",
 		"SubsLanguage":             "english",
 		"MenuOrder":                "CURRENT,ALL,UNTRACKED,UPDATE,CONTINUE_LAST",
+		"TrackingService":          "mal",
+		"DualTracking":             "true",
 		"SubOrDub":                 "sub",
 		"PercentageToMarkComplete": "85",
 		"NextEpisodePrompt":        "false",

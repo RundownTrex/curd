@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // FindKeyByValue searches for a key associated with a given value in a map[string]string
@@ -591,16 +592,31 @@ func UpdateAnimeProgress(token string, mediaID, progress int) error {
 func UpdateAnimeStatus(token string, mediaID int, status string) error {
 	url := "https://graphql.anilist.co"
 	query := `
-	mutation($mediaId: Int, $status: MediaListStatus) {
-		SaveMediaListEntry(mediaId: $mediaId, status: $status) {
+	mutation($mediaId: Int, $status: MediaListStatus, $completedAt: FuzzyDateInput) {
+		SaveMediaListEntry(mediaId: $mediaId, status: $status, completedAt: $completedAt) {
 			id
 			status
+			completedAt {
+				year
+				month
+				day
+			}
 		}
 	}`
 
 	variables := map[string]interface{}{
 		"mediaId": mediaID,
 		"status":  status,
+	}
+
+	// Set completion date when marking as completed
+	if status == "COMPLETED" {
+		now := time.Now()
+		variables["completedAt"] = map[string]interface{}{
+			"year":  now.Year(),
+			"month": int(now.Month()),
+			"day":   now.Day(),
+		}
 	}
 
 	headers := map[string]string{

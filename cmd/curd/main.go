@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,6 +66,7 @@ func main() {
 	imagePreview := flag.Bool("image-preview", false, "Show image preview")
 	noImagePreview := flag.Bool("no-image-preview", false, "No image preview")
 	changeToken := flag.Bool("change-token", false, "Change token")
+	changeMALToken := flag.Bool("change-mal-token", false, "Change MyAnimeList token")
 	currentCategory := flag.Bool("current", false, "Current category")
 	updateScript := flag.Bool("u", false, "Update the script")
 	editConfig := flag.Bool("e", false, "Edit config")
@@ -112,6 +114,11 @@ func main() {
 		return
 	}
 
+	if *changeMALToken {
+		internal.ChangeMALToken(&userCurdConfig, &user)
+		return
+	}
+
 	// Setup screen for interactive mode (only if not changing token)
 	internal.ClearScreen()
 	defer internal.RestoreScreen()
@@ -148,13 +155,64 @@ func main() {
 		userCurdConfig.SubOrDub = "dub"
 	}
 
-	// Get the token from the token file
-	user.Token, err = internal.GetTokenFromFile(filepath.Join(os.ExpandEnv(userCurdConfig.StoragePath), "anilist_token.json"))
-	if err != nil {
-		internal.Log("Error reading token")
+	// Determine which tracking service to use
+	trackingService := strings.ToLower(userCurdConfig.TrackingService)
+	if trackingService == "" {
+		trackingService = "mal" // Default to MAL
 	}
-	if user.Token == "" {
-		internal.ChangeToken(&userCurdConfig, &user)
+
+	// Get the appropriate token based on tracking service (for displaying anime list)
+	if trackingService == "mal" || trackingService == "myanimelist" {
+		user.Token, err = internal.GetMALTokenFromFile(filepath.Join(os.ExpandEnv(userCurdConfig.StoragePath), "mal_token.json"))
+		if err != nil {
+			internal.Log("Error reading MAL token")
+		}
+		if user.Token == "" {
+			internal.ChangeMALToken(&userCurdConfig, &user)
+		}
+		user.MalToken = user.Token
+	} else {
+		// Default to AniList
+		user.Token, err = internal.GetTokenFromFile(filepath.Join(os.ExpandEnv(userCurdConfig.StoragePath), "anilist_token.json"))
+		if err != nil {
+			internal.Log("Error reading AniList token")
+		}
+		if user.Token == "" {
+			internal.ChangeToken(&userCurdConfig, &user)
+		}
+		user.AnilistToken = user.Token
+	}
+
+	// If dual tracking is enabled, load the secondary token as well
+	if userCurdConfig.DualTracking {
+		internal.Log("Dual tracking is enabled in config")
+		if trackingService == "mal" || trackingService == "myanimelist" {
+			// Primary is MAL, load AniList as secondary
+			internal.Log("Primary service is MAL, loading AniList token as secondary...")
+			anilistToken, err := internal.GetTokenFromFile(filepath.Join(os.ExpandEnv(userCurdConfig.StoragePath), "anilist_token.json"))
+			if err != nil {
+				internal.Log(fmt.Sprintf("Dual tracking enabled but AniList token not found: %v", err))
+				internal.CurdOut("Warning: Dual tracking enabled but AniList token not found. Run './curd -change-token' to set up AniList.")
+			} else {
+				user.AnilistToken = anilistToken
+				internal.Log(fmt.Sprintf("AniList token loaded successfully (length: %d)", len(anilistToken)))
+				internal.Log("Dual tracking enabled: will update both MAL and AniList")
+			}
+		} else {
+			// Primary is AniList, load MAL as secondary
+			internal.Log("Primary service is AniList, loading MAL token as secondary...")
+			malToken, err := internal.GetMALTokenFromFile(filepath.Join(os.ExpandEnv(userCurdConfig.StoragePath), "mal_token.json"))
+			if err != nil {
+				internal.Log(fmt.Sprintf("Dual tracking enabled but MAL token not found: %v", err))
+				internal.CurdOut("Warning: Dual tracking enabled but MAL token not found. Run './curd -change-mal-token' to set up MAL.")
+			} else {
+				user.MalToken = malToken
+				internal.Log(fmt.Sprintf("MAL token loaded successfully (length: %d)", len(malToken)))
+				internal.Log("Dual tracking enabled: will update both AniList and MAL")
+			}
+		}
+	} else {
+		internal.Log("Dual tracking is disabled in config")
 	}
 
 	if userCurdConfig.RofiSelection {
@@ -185,12 +243,20 @@ func main() {
 
 	internal.SetupCurd(&userCurdConfig, &anime, &user, &databaseAnimes)
 
-	temp_anime, err := internal.FindAnimeByAnilistID(user.AnimeList, strconv.Itoa(anime.AnilistId))
-	if err != nil {
-		internal.Log("Error finding anime by Anilist ID: " + err.Error())
+	// Find anime in user's list using the correct ID based on tracking service
+	var idToFind string
+	if trackingService == "mal" || trackingService == "myanimelist" {
+		idToFind = strconv.Itoa(anime.MalId)
+	} else {
+		idToFind = strconv.Itoa(anime.AnilistId)
 	}
 
-	if anime.TotalEpisodes == temp_anime.Progress {
+	temp_anime, err := internal.FindAnimeByAnilistID(user.AnimeList, idToFind)
+	if err != nil {
+		internal.Log("Error finding anime in user list: " + err.Error())
+	}
+
+	if temp_anime != nil && anime.TotalEpisodes == temp_anime.Progress {
 		internal.Log(temp_anime.Progress)
 		internal.Log(anime.TotalEpisodes)
 		internal.Log(user.AnimeList)
@@ -330,11 +396,11 @@ func main() {
 					anime.Ep.IsCompleted = true
 					if !userCurdConfig.NextEpisodePrompt {
 						// fmt.Println("[DEBUG] Starting next episode from filler/recap skip")
-						internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, user.Token)
+						internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
 					} else {
 						// When NextEpisodePrompt is enabled, just call StartNextEpisode - it handles Rofi prompting internally
 						internal.ExitMPV(anime.Ep.Player.SocketPath)
-						internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, user.Token)
+						internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
 						return
 					}
 					// Send command to close MPV
@@ -421,7 +487,7 @@ func main() {
 		// Thread for continuous next episode prompt in CLI mode (throughout episode duration)
 		go func() {
 			if userCurdConfig.NextEpisodePrompt && !userCurdConfig.RofiSelection {
-				internal.NextEpisodePromptContinuous(&userCurdConfig, databaseFile, user.Token)
+				internal.NextEpisodePromptContinuous(&userCurdConfig, databaseFile, &user)
 				// If the function returns, it means user made a decision
 				// Exit the skip loop - only close if not already closed
 				select {
@@ -471,13 +537,13 @@ func main() {
 							if int(percentageWatched) >= userCurdConfig.PercentageToMarkComplete {
 								anime.Ep.IsCompleted = true
 								if !userCurdConfig.NextEpisodePrompt {
-									internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, user.Token)
+									internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
 								} else {
 									// For Rofi mode, show prompt immediately after completion
 									if userCurdConfig.RofiSelection {
 										shouldContinue := internal.NextEpisodePromptRofi(&userCurdConfig)
 										if shouldContinue {
-											internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, user.Token)
+											internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
 										} else {
 											// Episode was already marked as completed above
 											// Update local database with completed episode
@@ -599,13 +665,13 @@ func main() {
 							if int(percentageWatched) >= userCurdConfig.PercentageToMarkComplete {
 								anime.Ep.IsCompleted = true
 								if !userCurdConfig.NextEpisodePrompt {
-									internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, user.Token)
+									internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
 								} else {
 									// For Rofi mode, show prompt immediately after completion
 									if userCurdConfig.RofiSelection {
 										shouldContinue := internal.NextEpisodePromptRofi(&userCurdConfig)
 										if shouldContinue {
-											internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, user.Token)
+											internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
 										} else {
 											// Episode was already marked as completed above
 											// Update local database with completed episode
@@ -784,7 +850,7 @@ func main() {
 				// and the episode should transition. Let the normal flow continue.
 			} else {
 				// When NextEpisodePrompt is off, continue automatically
-				internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, user.Token)
+				internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
 				continue
 			}
 		}

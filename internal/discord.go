@@ -2,6 +2,7 @@ package internal
 
 import (
 	"fmt"
+
 	"github.com/hugolgst/rich-go/client"
 )
 
@@ -30,6 +31,8 @@ func DiscordPresence(anime Anime, IsPaused bool) error {
 	}
 
 	err := client.SetActivity(client.Activity{
+		Type:       3,                                      // 3 = Watching (0=Playing, 1=Streaming, 2=Listening, 3=Watching)
+		Name:       GetAnimeName(anime),                    // Overrides application name - shows "Watching [Anime Name]"
 		Details:    fmt.Sprintf("%s", GetAnimeName(anime)), // Large text
 		LargeImage: anime.CoverImage,
 		LargeText:  GetAnimeName(anime), // Would display while hovering over the large image
@@ -38,12 +41,12 @@ func DiscordPresence(anime Anime, IsPaused bool) error {
 		//SmallText:  fmt.Sprintf("Episode: %s", anime.Ep.Title.English), // Text when hovering over the small image
 		Buttons: []*client.Button{
 			{
-				Label: "View on AniList", // Button label
-				Url:   fmt.Sprintf("https://anilist.co/anime/%d", anime.AnilistId), // Button link
+				Label: "View on MAL",                                                // Button label
+				Url:   fmt.Sprintf("https://myanimelist.net/anime/%d", anime.MalId), // Button link
 			},
 			{
-				Label: "View on MAL", // Button label
-				Url:   fmt.Sprintf("https://myanimelist.net/anime/%d", anime.MalId), // Button link
+				Label: "View on AniList",                                           // Button label
+				Url:   fmt.Sprintf("https://anilist.co/anime/%d", anime.AnilistId), // Button link
 			},
 		},
 	})

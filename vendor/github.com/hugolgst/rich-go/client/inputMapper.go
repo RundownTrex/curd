@@ -10,6 +10,10 @@ type Activity struct {
 	Details string
 	// The user's current party status
 	State string
+	// Activity type: 0 = Playing, 1 = Streaming, 2 = Listening, 3 = Watching
+	Type int
+	// Activity name (overrides the application name for custom types)
+	Name string
 	// The id for a large asset of the activity, usually a snowflake
 	LargeImage string
 	// Text displayed when hovering over the large image of the activity
@@ -68,6 +72,8 @@ func mapActivity(activity *Activity) *PayloadActivity {
 	final := &PayloadActivity{
 		Details: activity.Details,
 		State:   activity.State,
+		Type:    activity.Type,
+		Name:    activity.Name,
 		Assets: PayloadAssets{
 			LargeImage: activity.LargeImage,
 			LargeText:  activity.LargeText,

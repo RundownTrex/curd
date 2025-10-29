@@ -61,10 +61,12 @@ type playingVideo struct {
 }
 
 type User struct {
-	Token     string
-	Username  string
-	Id        int
-	AnimeList AnimeList
+	Token        string
+	AnilistToken string // For dual tracking
+	MalToken     string // For dual tracking
+	Username     string
+	Id           int
+	AnimeList    AnimeList
 }
 
 // AniListAnime is the struct for the API response
