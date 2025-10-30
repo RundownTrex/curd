@@ -27,6 +27,8 @@ type Model struct {
 	terminalHeight int
 	scrollOffset   int
 	addNewOption   bool
+	multiSelect    bool
+	selectedItems  map[string]bool
 }
 
 var (
@@ -108,6 +110,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.selected < m.scrollOffset {
 				m.scrollOffset--
 			}
+		case " ":
+			// Toggle selection in multi-select mode
+			if m.multiSelect && m.selected < len(m.filteredKeys) {
+				key := m.filteredKeys[m.selected].Key
+				// Don't allow selecting back button
+				if key != "back" && key != "-1" {
+					if m.selectedItems[key] {
+						delete(m.selectedItems, key)
+					} else {
+						m.selectedItems[key] = true
+					}
+				}
+			}
 		case "enter":
 			if m.filteredKeys[m.selected].Key == "add_new" {
 				CurdOut("Adding a new anime...")
@@ -137,8 +152,15 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	// Display the search prompt and filter with colors
-	b.WriteString(titleStyle.Render("Search") + " (Press " +
-		quitHintStyle.Render("Ctrl+C") + " to quit):\n")
+	if m.multiSelect {
+		b.WriteString(titleStyle.Render("Multi-Select") + " (Press " +
+			quitHintStyle.Render("Space") + " to toggle, " +
+			quitHintStyle.Render("Enter") + " to continue, " +
+			quitHintStyle.Render("Ctrl+C") + " to quit):\n")
+	} else {
+		b.WriteString(titleStyle.Render("Search") + " (Press " +
+			quitHintStyle.Render("Ctrl+C") + " to quit):\n")
+	}
 
 	b.WriteString(filterLabelStyle.Render("Filter: ") +
 		filterTextStyle.Render(m.filter) + "\n\n") // Added extra newline for spacing
@@ -155,10 +177,21 @@ func (m Model) View() string {
 
 		// Render the options within the visible range
 		for i := start; i < end; i++ {
+			checkbox := ""
+			if m.multiSelect {
+				if m.selectedItems[m.filteredKeys[i].Key] {
+					checkbox = "[✓] "
+				} else {
+					checkbox = "[ ] "
+				}
+			}
+
+			label := checkbox + m.filteredKeys[i].Label
+
 			if i == m.selected {
-				b.WriteString(selectedItemStyle.Render(m.filteredKeys[i].Label) + "\n")
+				b.WriteString(selectedItemStyle.Render(label) + "\n")
 			} else {
-				b.WriteString(regularItemStyle.Render(m.filteredKeys[i].Label) + "\n")
+				b.WriteString(regularItemStyle.Render(label) + "\n")
 			}
 		}
 	}
@@ -485,4 +518,62 @@ func DynamicSelect(options []SelectionOption) (SelectionOption, error) {
 		return finalSelectionModel.filteredKeys[finalSelectionModel.selected], nil
 	}
 	return SelectionOption{}, nil
+}
+
+// DynamicMultiSelect allows selecting multiple options using space key
+// Returns a slice of selected options sorted by key (episode number)
+func DynamicMultiSelect(options []SelectionOption) ([]SelectionOption, error) {
+	if GetGlobalConfig().RofiSelection {
+		// Rofi doesn't support multi-select in this context, fall back to single select
+		selected, err := RofiSelect(options)
+		if err != nil {
+			return nil, err
+		}
+		return []SelectionOption{selected}, nil
+	}
+
+	model := &Model{
+		allOptions:    options,
+		multiSelect:   true,
+		selectedItems: make(map[string]bool),
+	}
+	model.filterOptions() // Initialize filtered options
+
+	p := tea.NewProgram(model)
+	finalModel, err := p.Run()
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Print("\033[?25h") // Show cursor
+	fmt.Print("\033[?7h")  // Enable line wrapping
+
+	finalSelectionModel, ok := finalModel.(*Model)
+	if !ok {
+		return nil, fmt.Errorf("unexpected model type")
+	}
+
+	// If user pressed Ctrl+C, return empty selection
+	if err != nil {
+		return []SelectionOption{}, nil
+	}
+
+	// Collect selected items
+	selectedOptions := make([]SelectionOption, 0)
+	for _, opt := range options {
+		if finalSelectionModel.selectedItems[opt.Key] {
+			selectedOptions = append(selectedOptions, opt)
+		}
+	}
+
+	// Sort by key (which should be episode numbers)
+	sort.Slice(selectedOptions, func(i, j int) bool {
+		// Parse episode numbers for proper numeric sorting
+		var num1, num2 int
+		fmt.Sscanf(selectedOptions[i].Key, "%d", &num1)
+		fmt.Sscanf(selectedOptions[j].Key, "%d", &num2)
+		return num1 < num2
+	})
+
+	return selectedOptions, nil
 }
