@@ -204,6 +204,10 @@ func (m *Model) filterOptions() {
 }
 
 func DynamicSelectPreview(options map[string]RofiSelectPreview, addnewoption bool) (SelectionOption, error) {
+	return DynamicSelectPreviewWithBack(options, addnewoption, "")
+}
+
+func DynamicSelectPreviewWithBack(options map[string]RofiSelectPreview, addnewoption bool, backText string) (SelectionOption, error) {
 	go preDownloadImages(options, 14)
 
 	userCurdConfig := GetGlobalConfig()
@@ -213,6 +217,11 @@ func DynamicSelectPreview(options map[string]RofiSelectPreview, addnewoption boo
 
 	var rofiInput strings.Builder
 	selectionOptions := make([]SelectionOption, 0, len(options))
+
+	// Add back button if backText is provided
+	if backText != "" {
+		rofiInput.WriteString(fmt.Sprintf("%s\n", backText))
+	}
 
 	// Prepare options and rofi input
 	for id, opt := range options {
@@ -252,6 +261,11 @@ func DynamicSelectPreview(options map[string]RofiSelectPreview, addnewoption boo
 	// Handle special cases
 	switch selected {
 	case "":
+		return SelectionOption{}, fmt.Errorf("no selection made")
+	case backText:
+		if backText != "" {
+			return SelectionOption{Label: "Back", Key: "back"}, nil
+		}
 		return SelectionOption{}, fmt.Errorf("no selection made")
 	case "Add new anime":
 		return SelectionOption{Label: "Add new anime", Key: "add_new"}, nil

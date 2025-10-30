@@ -1,120 +1,161 @@
-// Colours
-* {
-    background-color:               transparent;  /* Transparent background for the global UI */
-    background:                     #000000;  /* Solid black background */
-    background-transparent:         #1D2330A0;  /* Semi-transparent background */
-    text-color:                     #BBBBBB;  /* Default text color (light gray) */
-    text-color-selected:            #FFFFFF;  /* Text color when selected (white) */
-    primary:                        rgba(53, 132, 228, 0.75);  /* Blusish primary color */
-    important:                        rgba(53, 132, 228, 0.75);  /* Bluish primary color */
+configuration {
+    font:                           "Departure Mono Nerd Font 13";
+    show-icons:                     true;
 }
 
-configuration {
-    font:                           "Roboto 14";  /* Sets the global font to Roboto, size 14 */
-    show-icons:                     true;  /* Option to display icons in the UI */
+* {
+    bg:                             #1F1F1F;
+    hv:                             #2A2A2A;
+    primary:                        rgb(0, 0, 0);
+    ug:                             #e0744c;
+    white:                          rgb(255, 255, 255);
+    transparent:                    rgba(46, 52, 64, 0);
+    background-color:               @transparent;
 }
 
 window {
-    fullscreen:                     true;  /* The window will open in fullscreen */
-    height:                         100%;  /* Full window height */
-    width:                          100%;  /* Full window width */
-    transparency:                   "real";  /* Real transparency effect */
-    background-color:               @background-transparent;  /* Transparent background */
-    border:                         0px;  /* No border around the window */
-    border-color:                   @primary;  /* Border color set to the primary color */
+    fullscreen:                     true;
+    transparency:                   "real";
+    background-color:               rgba(31, 31, 31, 0.95);
+    border:                         0px;
 }
 
 mainbox {
-    children:                       [prompt, inputbar-box, listview];  /* Main box contains prompt, input bar, and list view */
-    padding:                        0px;  /* No padding around the main box */
+    children:                       [prompt, inputbar-box, listview];
+    padding:                        30px;
+    spacing:                        20px;
+    background-color:               @transparent;
 }
 
 prompt {
-    width:                          100%;  /* Prompt takes full width */
-    margin:                         10px 0px 0px 30px;  /* Margin around the prompt */
-    text-color:                     @important;  /* Text color for prompt (important color) */
-    font:                           "Roboto Bold 27";  /* Bold Roboto font, size 27 */
+    width:                          100%;
+    margin:                         0px 0px 10px 40px;
+    text-color:                     @ug;
+    font:                           "Departure Mono Nerd Font Bold 24";
+    background-color:               @transparent;
 }
 
 listview {
-    layout:                         vertical;  /* Vertical layout for list items */
-    padding:                        10px;  /* Padding inside the list view */
-    spacing:                        20px;  /* Space between items in the list */
-    columns:                        8;  /* Maximum 8 items per row */
-    dynamic:                        true;  /* Allows the list to dynamically adjust */
-    orientation:                    horizontal;  /* Horizontal orientation for list items */
+    layout:                         vertical;
+    padding:                        20px;
+    spacing:                        25px;
+    columns:                        5;
+    dynamic:                        true;
+    orientation:                    horizontal;
+    scrollbar:                      true;
+    background-color:               @transparent;
+}
+
+scrollbar {
+    enabled:                        true;
+    handle-width:                   8px;
+    handle-color:                   @ug;
+    background-color:               @transparent;
+    margin:                         5px 0px 5px 4px;
+    border-radius:                  16px;
+    border:                         0px;
 }
 
 inputbar-box {
-    children:                       [dummy, inputbar, dummy];  /* Input bar is centered with dummy placeholders */
-    orientation:                    horizontal;  /* Horizontal layout for input bar */
-    expand:                         false;  /* Does not expand to fill the space */
+    children:                       [dummy, inputbar, dummy];
+    orientation:                    horizontal;
+    expand:                         false;
+    background-color:               @transparent;
 }
 
 inputbar {
-    children:                       [textbox-prompt, entry];  /* Contains a prompt and an entry field */
-    margin:                         0px;  /* No margin around the input bar */
-    background-color:               @primary;  /* Background color set to the primary color */
-    border:                         4px;  /* Border thickness around the input bar */
-    border-color:                   @primary;  /* Border color matches the primary color */
-    border-radius:                  8px;  /* Rounded corners for the input bar */
+    children:                       [textbox-prompt, entry];
+    margin:                         0px;
+    background-color:               @hv;
+    border:                         2px solid;
+    border-color:                   @ug;
+    border-radius:                  16px;
+    padding:                        4px;
 }
 
 textbox-prompt {
-    text-color:                     @background;  /* Text color inside prompt matches the background color */
-    horizontal-align:               0.5;  /* Horizontally centered */
-    vertical-align:                 0.5;  /* Vertically centered */
-    expand:                         false;  /* Does not expand to fill available space */
+    text-color:                     @white;
+    background-color:               @hv;
+    horizontal-align:               0.5;
+    vertical-align:                 0.5;
+    expand:                         false;
+    padding:                        8px;
+    margin:                         0px 5px 0px 20px;
+    border-radius:                  0px;
+    font:                           "Departure Mono Nerd Font Bold 13";
 }
 
 entry {
-    expand:                         false;  /* Entry field does not expand */
-    padding:                        8px;  /* Padding inside the entry field */
-    margin:                         -6px;  /* Negative margin to position entry properly */
-    horizontal-align:               0;  /* Left-aligned text inside the entry field */
-    width:                          300;  /* Fixed width for the entry field */
-    background-color:               @background;  /* Entry background color matches the global background */
-    border:                         6px;  /* Border thickness around the entry field */
-    border-color:                   @primary;  /* Border color matches the primary color */
-    border-radius:                  8px;  /* Rounded corners for the entry field */
-    cursor:                         text;  /* Cursor changes to text input cursor inside the entry field */
+    expand:                         false;
+    padding:                        8px 12px 8px 10px;
+    margin:                         0px;
+    horizontal-align:               0;
+    width:                          400px;
+    background-color:               @hv;
+    border:                         0px;
+    cursor:                         text;
+    placeholder:                    "Search anime...";
+    placeholder-color:              rgba(255, 255, 255, 0.5);
+    text-color:                     @white;
 }
 
 element {
-    children:                       [dummy, element-box, dummy];  /* Contains an element box with dummy placeholders */
-    padding:                        5px;  /* Padding around the element */
-    orientation:                    vertical;  /* Vertical layout for element content */
-    border:                         0px;  /* No border around the element */
-    border-radius:                  16px;  /* Rounded corners for the element */
-    background-color:               transparent;  /* Transparent background */
-    width:                          100px;  /* Width of each element */
-    height:                         50px;  /* Height of each element */
+    children:                       [dummy, element-box, dummy];
+    padding:                        8px;
+    orientation:                    vertical;
+    border:                         0px;
+    border-radius:                  16px;
+    background-color:               @transparent;
+    width:                          200px;
+    cursor:                         pointer;
 }
 
 element selected {
-    background-color:               @primary;  /* Background color of the element when selected */
+    background-color:               @hv;
+    border:                         2px solid;
+    border-color:                   @ug;
 }
 
 element-box {
-    children:                       [element-icon, element-text];  /* Element box contains an icon and text */
-    orientation:                    vertical;  /* Vertical layout for icon and text */
-    expand:                         false;  /* Does not expand to fill available space */
-    cursor:                         pointer;  /* Cursor changes to a pointer when hovering over the element */
+    children:                       [element-icon, element-text];
+    orientation:                    vertical;
+    expand:                         false;
+    spacing:                        8px;
+    background-color:               @transparent;
 }
 
 element-icon {
-    padding:                        10px;  /* Padding inside the icon */
-    cursor:                         inherit;  /* Inherits cursor style from the parent */
-    size:                           33%;  /* Icon size is set to 33% of the parent element */
-    margin:                         10px;  /* Margin around the icon */
+    padding:                        10px;
+    cursor:                         inherit;
+    size:                           180px;
+    border-radius:                  8px;
+    background-color:               @bg;
+}
+
+element selected element-icon {
+    border:                         2px solid;
+    border-color:                   @ug;
+    background-color:               @bg;
 }
 
 element-text {
-    horizontal-align:               0.5;  /* Horizontally center-aligns the text */
-    cursor:                         inherit;  /* Inherits cursor style from the parent */
-    text-color:                     @text-color;  /* Text color for element text */
+    horizontal-align:               0.5;
+    cursor:                         inherit;
+    text-color:                     @white;
+    font:                           "Departure Mono Nerd Font 11";
+    background-color:               @transparent;
 }
 
 element-text selected {
-    text-color:                     @text-color-selected;  /* Text color when the element is selected */
+    text-color:                     @white;
+    font:                           "Departure Mono Nerd Font Bold 11";
+    background-color:               @transparent;
 }
+
+dummy {
+    expand:                         true;
+    background-color:               @transparent;
+}
+
+
+

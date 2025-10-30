@@ -210,9 +210,10 @@ func CurdOut(data interface{}) {
 	}
 }
 
-func UpdateAnimeEntry(userCurdConfig *CurdConfig, user *User) {
+func UpdateAnimeEntry(userCurdConfig *CurdConfig, user *User) bool {
 	// Create update options
 	updateOptions := []SelectionOption{
+		{Key: "back", Label: "<- Back"},
 		{Key: "CATEGORY", Label: "Change Anime Category"},
 		{Key: "PROGRESS", Label: "Change Progress"},
 		{Key: "SCORE", Label: "Add/Change Score"},
@@ -227,6 +228,11 @@ func UpdateAnimeEntry(userCurdConfig *CurdConfig, user *User) {
 
 	if updateSelection.Key == "-1" {
 		ExitCurd(nil)
+	}
+
+	// Handle "Back" option
+	if updateSelection.Key == "back" {
+		return true // Return true to indicate user wants to go back
 	}
 
 	// Get user's anime list
@@ -359,12 +365,14 @@ func UpdateAnimeEntry(userCurdConfig *CurdConfig, user *User) {
 				Label: title,
 			})
 		}
+		// Add "Back" option at the beginning
+		animeListOptions = append([]SelectionOption{{Key: "back", Label: "<- Back"}}, animeListOptions...)
 	}
 
 	// Select anime to update
 	var selectedAnime SelectionOption
 	if userCurdConfig.RofiSelection && userCurdConfig.ImagePreview {
-		selectedAnime, err = DynamicSelectPreview(animeListMapPreview, false)
+		selectedAnime, err = DynamicSelectPreviewWithBack(animeListMapPreview, false, "<- Back")
 	} else {
 		selectedAnime, err = DynamicSelect(animeListOptions)
 	}
@@ -375,6 +383,11 @@ func UpdateAnimeEntry(userCurdConfig *CurdConfig, user *User) {
 
 	if selectedAnime.Key == "-1" {
 		ExitCurd(nil)
+	}
+
+	// Handle "Back" option - restart UpdateAnimeEntry to show update options again
+	if selectedAnime.Key == "back" {
+		return UpdateAnimeEntry(userCurdConfig, user)
 	}
 
 	// After getting anime selection, get the current anime entry
@@ -494,6 +507,7 @@ func UpdateAnimeEntry(userCurdConfig *CurdConfig, user *User) {
 	}
 
 	CurdOut("Anime updated successfully!")
+	return false // Return false to indicate normal completion
 }
 
 func UpdateCurd(repo, fileName string) error {
@@ -793,7 +807,12 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 			// Handle options
 			if categorySelection.Key == "UPDATE" {
 				ClearScreen()
-				UpdateAnimeEntry(userCurdConfig, user)
+				goBack := UpdateAnimeEntry(userCurdConfig, user)
+				if goBack {
+					// User selected back, so restart SetupCurd to show main menu again
+					SetupCurd(userCurdConfig, anime, user, databaseAnimes)
+					return
+				}
 				ExitCurd(nil)
 			} else if categorySelection.Key == "UNTRACKED" {
 				ClearScreen()
@@ -829,6 +848,8 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 					Label: title,
 				})
 			}
+			// Add "Back" option at the beginning
+			animeListOptions = append([]SelectionOption{{Key: "back", Label: "<- Back"}}, animeListOptions...)
 		}
 	}
 
@@ -857,7 +878,7 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		// Select anime to watch (Anilist)
 		var err error
 		if userCurdConfig.RofiSelection && userCurdConfig.ImagePreview {
-			anilistSelectedOption, err = DynamicSelectPreview(animeListMapPreview, true)
+			anilistSelectedOption, err = DynamicSelectPreviewWithBack(animeListMapPreview, true, "<- Back")
 		} else {
 			// Add "Add new anime" option to the slice
 			animeListOptions = append(animeListOptions, SelectionOption{
@@ -876,6 +897,12 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 
 		if anilistSelectedOption.Key == "-1" {
 			ExitCurd(nil)
+		}
+
+		// Handle "Back" option - restart SetupCurd to show category selection again
+		if anilistSelectedOption.Key == "back" {
+			SetupCurd(userCurdConfig, anime, user, databaseAnimes)
+			return
 		}
 
 		if anilistSelectedOption.Label == "add_new" || anilistSelectedOption.Key == "add_new" {

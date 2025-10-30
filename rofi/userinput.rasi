@@ -1,55 +1,82 @@
 configuration {
-    font: "Sans 12";
+    font: "Departure Mono Nerd Font 13";
+    show-icons: false;
 }
 
 * {
-    background-color: rgba(0, 0, 0, 0.7);
-    text-color: #FFFFFF;
+    bg:                   #1F1F1F;
+    hv:                   #2A2A2A;
+    primary:              rgb(0, 0, 0);
+    ug:                   #e0744c;
+    border-color:         #e0744c;
+    white:                rgb(255, 255, 255);
+    transparent:          rgba(46, 52, 64, 0);
+    background-color:     @transparent;
 }
 
 window {
     fullscreen: true;
     transparency: "real";
-    background-color: transparent;
+    background-color: rgba(31, 31, 31, 0.90);
 }
 
 mainbox {
-    children: [ message, listview, inputbar ];
-    padding: 40% 30%;
-    background-color: transparent;
+    children: [message, inputbar];
+    padding: 40% 35%;
+    background-color: @transparent;
 }
 
 message {
-    border: 0;
-    padding: 10px;
-    border-radius:20px;
+    border: 2px solid;
+    border-color: @ug;
+    padding: 0px;
+    border-radius: 16px;
     margin: 0 0 20px 0;
-    font: "Sans Bold 24"; /* Increased font size and made it bold */
+    background-color: @bg;
+}
+
+textbox {
+    horizontal-align: 0.5;
+    vertical-align: 0.5;
+    font: "Departure Mono Nerd Font Bold 16";
+    background-color: @transparent;
+    text-color: @white;
+    padding: 16px;
 }
 
 inputbar {
-    children: [ prompt, entry ];
-    background-color: rgba(255, 255, 255, 0.1);
-    padding: 8px;
-    border-radius: 4px;
+    children: [prompt, entry];
+    background-color: @bg;
+    padding: 0px;
+    border-radius: 16px;
+    border: 2px solid;
+    border-color: @ug;
+    spacing: 0px;
 }
 
 prompt {
-    padding: 8px;
+    padding: 12px;
+    margin: 0px 5px 0px 20px;
+    background-color: @bg;
+    text-color: @white;
+    border-radius: 0px;
+    font: "Departure Mono Nerd Font Bold 13";
 }
 
 entry {
-    padding: 8px;
-    background-color: transparent;
+    padding: 12px 12px 12px 10px;
+    background-color: @bg;
+    text-color: @white;
+    border-radius: 0px;
+    border: 0px;
+    cursor: text;
+    placeholder: "Type here...";
+    placeholder-color: rgba(255, 255, 255, 0.5);
 }
 
 listview {
     lines: 0;
 }
 
-/* Style for the message text specifically */
-textbox {
-    horizontal-align: 0.5;    /* Center the text */
-    font: "Sans Bold 24";     /* Match message font */
-    background-color: transparent;
-}
+
+
