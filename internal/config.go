@@ -212,13 +212,15 @@ func createDefaultConfig(path string) error {
 }
 
 // authenticateWithBrowser performs OAuth authentication using browser
-func authenticateWithBrowser(tokenPath string) (string, error) {
+func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// Try to load existing token first
-	if token, err := loadToken(tokenPath); err == nil && isTokenValid(token) {
-		return token.AccessToken, nil
+	// Try to load existing token first (skip if forcing re-authentication)
+	if !forceReauth {
+		if token, err := loadToken(tokenPath); err == nil && isTokenValid(token) {
+			return token.AccessToken, nil
+		}
 	}
 
 	// Start local server to handle OAuth callback
@@ -456,9 +458,9 @@ func ChangeToken(config *CurdConfig, user *User) {
 	var err error
 	tokenPath := filepath.Join(os.ExpandEnv(config.StoragePath), "anilist_token.json")
 
-	// Try browser-based OAuth first
+	// Try browser-based OAuth (force re-authentication since user explicitly wants to change token)
 	fmt.Println("Starting browser-based authentication...")
-	user.Token, err = authenticateWithBrowser(tokenPath)
+	user.Token, err = authenticateWithBrowser(tokenPath, true)
 
 	if err != nil {
 		Log("Browser authentication failed: " + err.Error())
