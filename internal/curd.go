@@ -860,7 +860,6 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 	}
 
 	var anilistSelectedOption SelectionOption
-	var selectedAllanimeAnime SelectionOption
 	var userQuery string
 
 	if anime.Ep.ContinueLast {
@@ -945,83 +944,80 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		}
 	}
 
-	// Find anime in Local history
-	animePointer := LocalFindAnime(*databaseAnimes, anime.AnilistId, "")
-
-	// Get anime entry - use the selectedID (which is MAL ID for MAL tracking)
-	// The user.AnimeList contains MAL IDs when using MAL tracking
-	selectedAnilistAnime, err := FindAnimeByAnilistID(user.AnimeList, strconv.Itoa(selectedID))
+	// Fetch anime metadata from user list
+	idStrToFind := strconv.Itoa(selectedID)
+	selectedAnilistAnime, err := FindAnimeByAnilistID(user.AnimeList, idStrToFind)
 	if err != nil {
 		Log(fmt.Sprintf("Can not find the anime in animelist: %v", err))
 		ExitCurd(fmt.Errorf("Can not find the anime in animelist"))
 	}
 
-	// Set anime entry
+	// Set anime metadata
 	anime.Title = selectedAnilistAnime.Media.Title
 	anime.TotalEpisodes = selectedAnilistAnime.Media.Episodes
 	anime.CoverImage = selectedAnilistAnime.CoverImage
-	// anime.MalId and anime.AnilistId are already set above based on tracking service
 	anime.Ep.Number = selectedAnilistAnime.Progress + 1
-	var animeList []SelectionOption
 	userQuery = anime.Title.Romaji
 
-	// if anime not found in database, find it in animeList
-	if animePointer == nil {
-		Log("Anime not found in database, searching in animeList...")
-		// Get Anime list (All anime)
-		Log(fmt.Sprintf("Searching for anime with query: %s, SubOrDub: %s", userQuery, userCurdConfig.SubOrDub))
+	// Find anime in Local history
+	animePointer := LocalFindAnime(*databaseAnimes, anime.AnilistId, "")
 
-		animeList, err = SearchAnime(string(userQuery), userCurdConfig.SubOrDub)
-		if err != nil {
-			Log(fmt.Sprintf("Failed to select anime: %v", err))
-			ExitCurd(fmt.Errorf("Failed to select anime"))
-		}
-		if len(animeList) == 0 {
-			ExitCurd(fmt.Errorf("No results found."))
-		}
-
-		// find anime in animeList by searching through the options
-		targetLabel := fmt.Sprintf("%v (%d episodes)", userQuery, selectedAnilistAnime.Media.Episodes)
-		found := false
-		for i, option := range animeList {
-			Log(fmt.Sprintf("Checking option %d: Key='%s', Label='%s'", i, option.Key, option.Label))
-			if option.Label == targetLabel {
-				anime.AllanimeId = option.Key
-				Log(fmt.Sprintf("Found exact match! Setting AllanimeId to: %s", anime.AllanimeId))
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			Log(fmt.Sprintf("No exact match found for label '%s'. Will require manual selection.", targetLabel))
-		}
-
-		// If unable to get Allanime id automatically get manually
-		if anime.AllanimeId == "" {
-			CurdOut("Failed to automatically select anime")
-			selectedAllanimeAnime, err := DynamicSelect(animeList)
-
-			if selectedAllanimeAnime.Key == "-1" {
-				ExitCurd(nil)
-			}
-
-			if err != nil {
-				ExitCurd(fmt.Errorf("No anime available"))
-			}
-			anime.AllanimeId = selectedAllanimeAnime.Key
-		}
-	} else {
-		// if anime found in database, use it
+	// if anime found in database, use it
+	if animePointer != nil {
 		anime.AllanimeId = animePointer.AllanimeId
+
+		// Safety check: if the ID contains a colon (legacy provider prefix)
+		// and we are no longer using multi-provider logic, clear it to force a re-link.
+		if strings.Contains(anime.AllanimeId, ":") {
+			Log(fmt.Sprintf("Legacy provider ID detected: %s. Clearing fixed ID to force re-link.", anime.AllanimeId))
+			anime.AllanimeId = ""
+		}
+
 		anime.Ep.Player.PlaybackTime = animePointer.Ep.Player.PlaybackTime
 		if anime.Ep.Number == animePointer.Ep.Number {
 			anime.Ep.Resume = true
 		}
 	}
 
-	if selectedAllanimeAnime.Key == "-1" {
-		ExitCurd(nil)
+	// If AllanimeId is missing (not in DB or cleared), search and select it
+	if anime.AllanimeId == "" {
+		Log("AllanimeId is missing, searching for anime...")
+		// Get Anime list (All anime)
+		Log(fmt.Sprintf("Searching for anime with query: %s, SubOrDub: %s", userQuery, userCurdConfig.SubOrDub))
+
+		animeList, err := SearchAnime(string(userQuery), userCurdConfig.SubOrDub)
+		if err != nil {
+			Log(fmt.Sprintf("Failed to search anime: %v", err))
+			ExitCurd(fmt.Errorf("Failed to search anime"))
+		}
+		if len(animeList) == 0 {
+			ExitCurd(fmt.Errorf("No results found on provider."))
+		}
+
+		// Try to find exact match by title and episodes
+		targetLabel := fmt.Sprintf("%v (%d episodes)", userQuery, selectedAnilistAnime.Media.Episodes)
+		for i, option := range animeList {
+			Log(fmt.Sprintf("Checking option %d: Key='%s', Label='%s'", i, option.Key, option.Label))
+			if option.Label == targetLabel {
+				anime.AllanimeId = option.Key
+				Log(fmt.Sprintf("Found exact match! Setting AllanimeId to: %s", anime.AllanimeId))
+				break
+			}
+		}
+
+		// If still no exact match, prompt manual selection
+		if anime.AllanimeId == "" {
+			CurdOut("Failed to automatically select anime")
+			var selectedAllanimeAnime SelectionOption
+			selectedAllanimeAnime, err = DynamicSelect(animeList)
+			if err != nil {
+				ExitCurd(fmt.Errorf("No anime available"))
+			}
+			if selectedAllanimeAnime.Key == "-1" {
+				ExitCurd(nil)
+			}
+			anime.AllanimeId = selectedAllanimeAnime.Key
+		}
 	}
 
 	// If anime is not in watching list, prompt user to add it into watching list
@@ -1046,11 +1042,8 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 			{Key: "no", Label: "Continue without adding"},
 		}
 
-		var selectedOption SelectionOption
-		var err error
-
 		// Use rofi for selection
-		selectedOption, err = DynamicSelect(options)
+		selectedOption, err := DynamicSelect(options)
 		if err != nil {
 			Log("Error in selection: " + err.Error())
 			ExitCurd(err)
@@ -1085,7 +1078,7 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 
 	// If upstream is ahead, update the episode number
 	// Use the correct ID format based on tracking service
-	idStrToFind := strconv.Itoa(anime.AnilistId)
+	idStrToFind = strconv.Itoa(anime.AnilistId)
 	if service == "mal" {
 		idStrToFind = strconv.Itoa(anime.MalId)
 	}
@@ -1099,9 +1092,7 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 
 	if anime.TotalEpisodes == 0 {
 		// Get updated anime data
-		Log(selectedAllanimeAnime)
 		updatedAnime, err := GetAnimeDataByID(anime.AnilistId, user.Token)
-		Log(updatedAnime)
 		if err != nil {
 			Log(fmt.Sprintf("Error getting updated anime data: %v", err))
 		} else {
