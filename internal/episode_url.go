@@ -1,11 +1,11 @@
 package internal
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -153,31 +153,31 @@ func extractLinks(provider_id string) map[string]interface{} {
 func GetEpisodeURL(config CurdConfig, id string, epNo int) ([]string, error) {
 	query := `query($showId:String!,$translationType:VaildTranslationTypeEnumType!,$episodeString:String!){episode(showId:$showId,translationType:$translationType,episodeString:$episodeString){episodeString sourceUrls}}`
 
-	variables := map[string]string{
+	variables := map[string]interface{}{
 		"showId":          id,
 		"translationType": config.SubOrDub,
 		"episodeString":   fmt.Sprintf("%d", epNo),
 	}
 
-	variablesJSON, err := json.Marshal(variables)
+	// Build POST request body
+	requestBody, err := json.Marshal(map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
-
-	values := url.Values{}
-	values.Set("query", query)
-	values.Set("variables", string(variablesJSON))
-
-	reqURL := fmt.Sprintf("%s/api?%s", "https://api.allanime.day", values.Encode())
 
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", reqURL, nil)
+	req, err := http.NewRequest("POST", "https://api.allanime.day/api", bytes.NewBuffer(requestBody))
 	if err != nil {
 		return nil, err
 	}
 
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
 	req.Header.Set("Referer", "https://allanime.to")
+	req.Header.Set("Origin", "https://allanime.to")
 
 	resp, err := client.Do(req)
 	if err != nil {

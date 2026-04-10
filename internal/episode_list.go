@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,18 +42,27 @@ func EpisodesList(showID, mode string) ([]string, error) {
 
 	episodesListGql := `query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}`
 
-	// Build the request URL
-	url := fmt.Sprintf("%s?variables={\"showId\":\"%s\"}&query=%s", allanimeAPI, showID, episodesListGql)
 	episodes := []string{}
 
-	// Make the HTTP request
-	req, err := http.NewRequest("GET", url, nil)
+	// Build POST request body
+	requestBody, err := json.Marshal(map[string]interface{}{
+		"query":     episodesListGql,
+		"variables": map[string]string{"showId": showID},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	// Make the HTTP POST request
+	req, err := http.NewRequest("POST", allanimeAPI, bytes.NewBuffer(requestBody))
 	if err != nil {
 		Log(fmt.Sprint("Error creating HTTP request:", err))
 		return episodes, err
 	}
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", agent)
 	req.Header.Set("Referer", allanimeRef)
+	req.Header.Set("Origin", allanimeRef)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
