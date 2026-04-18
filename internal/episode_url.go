@@ -1,142 +1,200 @@
 package internal
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"regexp"
-	"strings"
-	"time"
-	"unicode"
+"bytes"
+"crypto/aes"
+"crypto/cipher"
+"crypto/sha256"
+"encoding/base64"
+"encoding/binary"
+"encoding/json"
+"fmt"
+"io"
+"net/http"
+"regexp"
+"strings"
+"time"
+"unicode"
 )
 
 type allanimeResponse struct {
-	Data struct {
-		Episode struct {
-			SourceUrls []struct {
-				SourceUrl string `json:"sourceUrl"`
-			} `json:"sourceUrls"`
-		} `json:"episode"`
-	} `json:"data"`
+Data struct {
+Episode struct {
+SourceUrls []struct {
+SourceUrl string `json:"sourceUrl"`
+} `json:"sourceUrls"`
+} `json:"episode"`
+Tobeparsed string `json:"tobeparsed"`
+} `json:"data"`
 }
 
 type result struct {
-	index int
-	links []string
-	err   error
+index int
+links []string
+err   error
+}
+
+func decodeTobeparsed(blob string) string {
+key := []byte("SimtVuagFbGR2K7P")
+hash := sha256.Sum256(key)
+
+data, err := base64.StdEncoding.DecodeString(blob)
+if err != nil {
+Log(fmt.Sprint("Error decoding base64:", err))
+return ""
+}
+
+if len(data) < 28 {
+Log(fmt.Sprint("Data too short to contain IV and ciphertext"))
+return ""
+}
+
+iv := data[:12]
+ct := data[12:]
+
+ctrIV := make([]byte, 16)
+copy(ctrIV, iv)
+binary.BigEndian.PutUint32(ctrIV[12:], uint32(2))
+
+block, err := aes.NewCipher(hash[:])
+if err != nil {
+Log(fmt.Sprint("Error creating cipher:", err))
+return ""
+}
+
+stream := cipher.NewCTR(block, ctrIV)
+plain := make([]byte, len(ct))
+stream.XORKeyStream(plain, ct)
+
+result := string(plain)
+result = strings.ReplaceAll(result, "{", "\n")
+result = strings.ReplaceAll(result, "}", "\n")
+
+re := regexp.MustCompile(`"sourceUrl":"--([^"]+)".*"sourceName":"([^"]+)"`)
+matches := re.FindAllStringSubmatch(result, -1)
+
+var sb strings.Builder
+for _, match := range matches {
+if len(match) == 3 {
+sb.WriteString(match[2])
+sb.WriteString(" :")
+sb.WriteString(match[1])
+sb.WriteString("\n")
+}
+}
+
+return sb.String()
 }
 
 func decodeProviderID(encoded string) string {
-	// Split the string into pairs of characters (.. equivalent of 'sed s/../&\n/g')
-	re := regexp.MustCompile("..")
-	pairs := re.FindAllString(encoded, -1)
+// Split the string into pairs of characters (.. equivalent of 'sed s/../&\n/g')
+re := regexp.MustCompile("..")
+pairs := re.FindAllString(encoded, -1)
 
-	// Mapping for the replacements
-	replacements := map[string]string{
-		// Uppercase letters
-		"79": "A", "7a": "B", "7b": "C", "7c": "D", "7d": "E", "7e": "F", "7f": "G",
-		"70": "H", "71": "I", "72": "J", "73": "K", "74": "L", "75": "M", "76": "N", "77": "O",
-		"68": "P", "69": "Q", "6a": "R", "6b": "S", "6c": "T", "6d": "U", "6e": "V", "6f": "W",
-		"60": "X", "61": "Y", "62": "Z",
-		// Lowercase letters
-		"59": "a", "5a": "b", "5b": "c", "5c": "d", "5d": "e", "5e": "f", "5f": "g",
-		"50": "h", "51": "i", "52": "j", "53": "k", "54": "l", "55": "m", "56": "n", "57": "o",
-		"48": "p", "49": "q", "4a": "r", "4b": "s", "4c": "t", "4d": "u", "4e": "v", "4f": "w",
-		"40": "x", "41": "y", "42": "z",
-		// Numbers
-		"08": "0", "09": "1", "0a": "2", "0b": "3", "0c": "4", "0d": "5", "0e": "6", "0f": "7",
-		"00": "8", "01": "9",
-		// Special characters
-		"15": "-", "16": ".", "67": "_", "46": "~", "02": ":", "17": "/", "07": "?", "1b": "#",
-		"63": "[", "65": "]", "78": "@", "19": "!", "1c": "$", "1e": "&", "10": "(", "11": ")",
-		"12": "*", "13": "+", "14": ",", "03": ";", "05": "=", "1d": "%",
-	}
+// Mapping for the replacements
+replacements := map[string]string{
+// Uppercase letters
+"79": "A", "7a": "B", "7b": "C", "7c": "D", "7d": "E", "7e": "F", "7f": "G",
+"70": "H", "71": "I", "72": "J", "73": "K", "74": "L", "75": "M", "76": "N", "77": "O",
+"68": "P", "69": "Q", "6a": "R", "6b": "S", "6c": "T", "6d": "U", "6e": "V", "6f": "W",
+"60": "X", "61": "Y", "62": "Z",
+// Lowercase letters
+"59": "a", "5a": "b", "5b": "c", "5c": "d", "5d": "e", "5e": "f", "5f": "g",
+"50": "h", "51": "i", "52": "j", "53": "k", "54": "l", "55": "m", "56": "n", "57": "o",
+"48": "p", "49": "q", "4a": "r", "4b": "s", "4c": "t", "4d": "u", "4e": "v", "4f": "w",
+"40": "x", "41": "y", "42": "z",
+// Numbers
+"08": "0", "09": "1", "0a": "2", "0b": "3", "0c": "4", "0d": "5", "0e": "6", "0f": "7",
+"00": "8", "01": "9",
+// Special characters
+"15": "-", "16": ".", "67": "_", "46": "~", "02": ":", "17": "/", "07": "?", "1b": "#",
+"63": "[", "65": "]", "78": "@", "19": "!", "1c": "$", "1e": "&", "10": "(", "11": ")",
+"12": "*", "13": "+", "14": ",", "03": ";", "05": "=", "1d": "%",
+}
 
-	// Perform the replacement equivalent to sed 's/^../.../'
-	for i, pair := range pairs {
-		if val, exists := replacements[pair]; exists {
-			pairs[i] = val
-		}
-	}
+// Perform the replacement equivalent to sed 's/^../.../'
+for i, pair := range pairs {
+if val, exists := replacements[pair]; exists {
+pairs[i] = val
+}
+}
 
-	// Join the modified pairs back into a single string
-	result := strings.Join(pairs, "")
+// Join the modified pairs back into a single string
+result := strings.Join(pairs, "")
 
-	// Replace "/clock" with "/clock.json" equivalent of sed "s/\/clock/\/clock\.json/"
-	result = strings.ReplaceAll(result, "/clock", "/clock.json")
+// Replace "/clock" with "/clock.json" equivalent of sed "s/\/clock/\/clock\.json/"
+result = strings.ReplaceAll(result, "/clock", "/clock.json")
 
-	// Print the final result
-	return result
+// Print the final result
+return result
 }
 
 func extractLinks(provider_id string) map[string]interface{} {
-	// Check if provider_id is already a full URL (external link)
-	if strings.HasPrefix(provider_id, "http://") || strings.HasPrefix(provider_id, "https://") {
-		// It's an external direct video link, return it as-is
-		cleanedURL := provider_id
-		// Clean up any double slashes in the URL (except after protocol)
-		if strings.Contains(cleanedURL, "://") {
-			parts := strings.SplitN(cleanedURL, "://", 2)
-			if len(parts) == 2 {
-				protocol := parts[0]
-				rest := parts[1]
-				// Replace any double slashes in the rest of the URL
-				rest = strings.ReplaceAll(rest, "//", "/")
-				cleanedURL = protocol + "://" + rest
-			}
-		}
-		
-		Log(fmt.Sprintf("Direct external link detected: %s -> %s", provider_id, cleanedURL))
-		return map[string]interface{}{
-			"links": []interface{}{
-				map[string]interface{}{
-					"link": cleanedURL,
-				},
-			},
-		}
-	}
-	
-	// It's a relative path for allanime API
-	allanime_base := "https://allanime.day"
-	url := allanime_base + provider_id
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", url, nil)
-	var videoData map[string]interface{}
-	if err != nil {
-		Log(fmt.Sprint("Error creating request:", err))
-		return videoData
-	}
+// Check if provider_id is already a full URL (external link)
+if strings.HasPrefix(provider_id, "http://") || strings.HasPrefix(provider_id, "https://") {
+// It's an external direct video link, return it as-is
+cleanedURL := provider_id
+// Clean up any double slashes in the URL (except after protocol)
+if strings.Contains(cleanedURL, "://") {
+parts := strings.SplitN(cleanedURL, "://", 2)
+if len(parts) == 2 {
+protocol := parts[0]
+rest := parts[1]
+// Replace any double slashes in the rest of the URL
+rest = strings.ReplaceAll(rest, "//", "/")
+cleanedURL = protocol + "://" + rest
+}
+}
 
-	// Add the headers
-	req.Header.Set("Referer", "https://allanime.to")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
+Log(fmt.Sprintf("Direct external link detected: %s -> %s", provider_id, cleanedURL))
+return map[string]interface{}{
+"links": []interface{}{
+map[string]interface{}{
+"link": cleanedURL,
+},
+},
+}
+}
 
-	// Send the request
-	resp, err := client.Do(req)
-	if err != nil {
-		Log(fmt.Sprint("Error sending request:", err))
-		return videoData
-	}
-	defer resp.Body.Close()
+// It's a relative path for allanime API
+allanime_base := "https://allanime.day"
+url := allanime_base + provider_id
+client := &http.Client{}
+req, err := http.NewRequest("GET", url, nil)
+var videoData map[string]interface{}
+if err != nil {
+Log(fmt.Sprint("Error creating request:", err))
+return videoData
+}
 
-	// Read the response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		Log(fmt.Sprint("Error reading response:", err))
-		return videoData
-	}
+// Add the headers
+req.Header.Set("Referer", "https://allanime.to")
+req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
 
-	// Parse the JSON response
-	err = json.Unmarshal(body, &videoData)
-	if err != nil {
-		Log(fmt.Sprint("Error parsing JSON:", err))
-		return videoData
-	}
+// Send the request
+resp, err := client.Do(req)
+if err != nil {
+Log(fmt.Sprint("Error sending request:", err))
+return videoData
+}
+defer resp.Body.Close()
 
-	// Process the data as needed
-	return videoData
+// Read the response body
+body, err := io.ReadAll(resp.Body)
+if err != nil {
+Log(fmt.Sprint("Error reading response:", err))
+return videoData
+}
+
+// Parse the JSON response
+err = json.Unmarshal(body, &videoData)
+if err != nil {
+Log(fmt.Sprint("Error parsing JSON:", err))
+return videoData
+}
+
+// Process the data as needed
+return videoData
 }
 
 // Get anime episode url respective to given config
@@ -151,240 +209,263 @@ func extractLinks(provider_id string) map[string]interface{} {
 // - []string: a list of links for specified episode.
 // - error: an error if the episode is not found or if there is an issue during the search.
 func GetEpisodeURL(config CurdConfig, id string, epNo int) ([]string, error) {
-	query := `query($showId:String!,$translationType:VaildTranslationTypeEnumType!,$episodeString:String!){episode(showId:$showId,translationType:$translationType,episodeString:$episodeString){episodeString sourceUrls}}`
+query := `query($showId:String!,$translationType:VaildTranslationTypeEnumType!,$episodeString:String!){episode(showId:$showId,translationType:$translationType,episodeString:$episodeString){episodeString sourceUrls}}`
 
-	variables := map[string]interface{}{
-		"showId":          id,
-		"translationType": config.SubOrDub,
-		"episodeString":   fmt.Sprintf("%d", epNo),
-	}
+variables := map[string]interface{}{
+"showId":          id,
+"translationType": config.SubOrDub,
+"episodeString":   fmt.Sprintf("%d", epNo),
+}
 
-	// Build POST request body
-	requestBody, err := json.Marshal(map[string]interface{}{
-		"query":     query,
-		"variables": variables,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request body: %w", err)
-	}
+// Build POST request body
+requestBody, err := json.Marshal(map[string]interface{}{
+"query":     query,
+"variables": variables,
+})
+if err != nil {
+return nil, fmt.Errorf("failed to marshal request body: %w", err)
+}
 
-	client := &http.Client{}
-	req, err := http.NewRequest("POST", "https://api.allanime.day/api", bytes.NewBuffer(requestBody))
-	if err != nil {
-		return nil, err
-	}
+client := &http.Client{}
+req, err := http.NewRequest("POST", "https://api.allanime.day/api", bytes.NewBuffer(requestBody))
+if err != nil {
+return nil, err
+}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
-	req.Header.Set("Referer", "https://allanime.to")
-	req.Header.Set("Origin", "https://allanime.to")
+req.Header.Set("Content-Type", "application/json")
+req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
+req.Header.Set("Referer", "https://allanime.to")
+req.Header.Set("Origin", "https://allanime.to")
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+resp, err := client.Do(req)
+if err != nil {
+return nil, err
+}
+defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
+body, err := io.ReadAll(resp.Body)
+if err != nil {
+return nil, err
+}
 
-	var response allanimeResponse
-	err = json.Unmarshal(body, &response)
-	if err != nil {
-		Log(fmt.Sprint("Error parsing JSON: ", err))
-		return nil, err
-	}
+var response allanimeResponse
+err = json.Unmarshal(body, &response)
+if err != nil {
+Log(fmt.Sprint("Error parsing JSON: ", err))
+return nil, err
+}
 
-	// Pre-count valid URLs and create slice to preserve order
-	validURLs := make([]string, 0)
-	highestPriority := -1
-	var highestPriorityURL string
+// Check if the response contains encrypted data (tobeparsed field)
+if response.Data.Tobeparsed != "" {
+Log("Found tobeparsed field, using decoded response")
+decoded := decodeTobeparsed(response.Data.Tobeparsed)
+lines := strings.Split(strings.TrimSpace(decoded), "\n")
+var validURLs []string
+for _, line := range lines {
+if parts := strings.Split(line, " :"); len(parts) == 2 {
+validURLs = append(validURLs, "--"+parts[1])
+}
+}
 
-	for _, url := range response.Data.Episode.SourceUrls {
-		if len(url.SourceUrl) > 2 && unicode.IsDigit(rune(url.SourceUrl[2])) {
-			decodedURL := decodeProviderID(url.SourceUrl[2:])
-			if strings.Contains(decodedURL, LinkPriorities[0]) {
-				priority := int(url.SourceUrl[2] - '0')
-				if priority > highestPriority {
-					highestPriority = priority
-					highestPriorityURL = url.SourceUrl
-				}
-			} else {
-				validURLs = append(validURLs, url.SourceUrl)
-			}
-		}
-	}
+if len(validURLs) == 0 {
+return nil, fmt.Errorf("no valid source URLs found in decoded tobeparsed")
+}
 
-	// If we found a highest priority URL, use only that
-	if highestPriorityURL != "" {
-		validURLs = []string{highestPriorityURL}
-	}
+return getLinksFromURLs(validURLs)
+}
 
-	if len(validURLs) == 0 {
-		return nil, fmt.Errorf("no valid source URLs found in response")
-	}
+// Pre-count valid URLs and create slice to preserve order
+validURLs := make([]string, 0)
+highestPriority := -1
+var highestPriorityURL string
 
-	// Create channels for results and a slice to store ordered results
-	results := make(chan result, len(validURLs))
-	orderedResults := make([][]string, len(validURLs))
+for _, url := range response.Data.Episode.SourceUrls {
+if len(url.SourceUrl) > 2 && unicode.IsDigit(rune(url.SourceUrl[2])) {
+decodedURL := decodeProviderID(url.SourceUrl[2:])
+if strings.Contains(decodedURL, LinkPriorities[0]) {
+priority := int(url.SourceUrl[2] - '0')
+if priority > highestPriority {
+highestPriority = priority
+highestPriorityURL = url.SourceUrl
+}
+} else {
+validURLs = append(validURLs, url.SourceUrl)
+}
+}
+}
 
-	// Add a channel for high priority links
-	highPriorityLink := make(chan []string, 1)
+// If we found a highest priority URL, use only that
+if highestPriorityURL != "" {
+validURLs = []string{highestPriorityURL}
+}
 
-	// Create rate limiter
-	rateLimiter := time.NewTicker(50 * time.Millisecond)
-	defer rateLimiter.Stop()
+if len(validURLs) == 0 {
+return nil, fmt.Errorf("no valid source URLs found in response")
+}
 
-	// Launch goroutines
-	remainingURLs := len(validURLs)
-	for i, sourceUrl := range validURLs {
-		go func(idx int, url string) {
-			<-rateLimiter.C // Rate limit the requests
+return getLinksFromURLs(validURLs)
+}
 
-			decodedProviderID := decodeProviderID(url[2:])
-			Log(fmt.Sprintf("Processing URL %d/%d with provider ID: %s", idx+1, len(validURLs), decodedProviderID))
+func getLinksFromURLs(validURLs []string) ([]string, error) {
+// Create channels for results and a slice to store ordered results
+results := make(chan result, len(validURLs))
+orderedResults := make([][]string, len(validURLs))
 
-			extractedLinks := extractLinks(decodedProviderID)
+// Add a channel for high priority links
+highPriorityLink := make(chan []string, 1)
 
-			if extractedLinks == nil {
-				results <- result{
-					index: idx,
-					err:   fmt.Errorf("failed to extract links for provider %s", decodedProviderID),
-				}
-				return
-			}
+// Create rate limiter
+rateLimiter := time.NewTicker(50 * time.Millisecond)
+defer rateLimiter.Stop()
 
-			linksInterface, ok := extractedLinks["links"].([]interface{})
-			if !ok {
-				results <- result{
-					index: idx,
-					err:   fmt.Errorf("links field is not []interface{} for provider %s", decodedProviderID),
-				}
-				return
-			}
+// Launch goroutines
+remainingURLs := len(validURLs)
+for i, sourceUrl := range validURLs {
+go func(idx int, url string) {
+<-rateLimiter.C // Rate limit the requests
 
-			var links []string
-			for _, linkInterface := range linksInterface {
-				linkMap, ok := linkInterface.(map[string]interface{})
-				if !ok {
-					Log(fmt.Sprintf("Warning: invalid link format for provider %s", decodedProviderID))
-					continue
-				}
+decodedProviderID := decodeProviderID(url[2:])
+Log(fmt.Sprintf("Processing URL %d/%d with provider ID: %s", idx+1, len(validURLs), decodedProviderID))
 
-				link, ok := linkMap["link"].(string)
-				if !ok {
-					Log(fmt.Sprintf("Warning: link field is not string for provider %s", decodedProviderID))
-					continue
-				}
+extractedLinks := extractLinks(decodedProviderID)
 
-				links = append(links, link)
-			}
+if extractedLinks == nil {
+results <- result{
+index: idx,
+err:   fmt.Errorf("failed to extract links for provider %s", decodedProviderID),
+}
+return
+}
 
-			// Check if any of the extracted links are high priority
-			for _, link := range links {
-				for _, domain := range LinkPriorities[:3] { // Check only top 3 priority domains
-					if strings.Contains(link, domain) {
-						// Found high priority link, send it immediately
-						select {
-						case highPriorityLink <- []string{link}:
-						default:
-							// Channel already has a high priority link
-						}
-						break
-					}
-				}
-			}
+linksInterface, ok := extractedLinks["links"].([]interface{})
+if !ok {
+results <- result{
+index: idx,
+err:   fmt.Errorf("links field is not []interface{} for provider %s", decodedProviderID),
+}
+return
+}
 
-			results <- result{
-				index: idx,
-				links: links,
-			}
-		}(i, sourceUrl)
-	}
+var links []string
+for _, linkInterface := range linksInterface {
+linkMap, ok := linkInterface.(map[string]interface{})
+if !ok {
+Log(fmt.Sprintf("Warning: invalid link format for provider %s", decodedProviderID))
+continue
+}
 
-	// Collect results with timeout
-	timeout := time.After(10 * time.Second)
-	var collectedErrors []error
-	successCount := 0
+link, ok := linkMap["link"].(string)
+if !ok {
+Log(fmt.Sprintf("Warning: link field is not string for provider %s", decodedProviderID))
+continue
+}
 
-	// First, try to get a high priority link
-	select {
-	case links := <-highPriorityLink:
-		// Continue extracting other links in background
-		go collectRemainingResults(results, orderedResults, &successCount, &collectedErrors, remainingURLs)
-		return links, nil
-	case <-time.After(2 * time.Second): // Wait only briefly for high priority link
-		// No high priority link found quickly, proceed with normal collection
-	}
+links = append(links, link)
+}
 
-	// Continue with existing result collection logic
-	// Collect results maintaining order
-	for successCount < len(validURLs) {
-		select {
-		case res := <-results:
-			if res.err != nil {
-				Log(fmt.Sprintf("Error processing URL %d: %v", res.index+1, res.err))
-				collectedErrors = append(collectedErrors, fmt.Errorf("URL %d: %w", res.index+1, res.err))
-			} else {
-				orderedResults[res.index] = res.links
-				successCount++
-				Log(fmt.Sprintf("Successfully processed URL %d/%d", res.index+1, len(validURLs)))
-			}
-		case <-timeout:
-			if successCount > 0 {
-				Log(fmt.Sprintf("Timeout reached with %d/%d successful results", successCount, len(validURLs)))
-				// Flatten available results
-				return flattenResults(orderedResults), nil
-			}
-			return nil, fmt.Errorf("timeout waiting for results after %d successful responses", successCount)
-		}
-	}
+// Check if any of the extracted links are high priority
+for _, link := range links {
+for _, domain := range LinkPriorities[:3] { // Check only top 3 priority domains
+if strings.Contains(link, domain) {
+// Found high priority link, send it immediately
+select {
+case highPriorityLink <- []string{link}:
+default:
+// Channel already has a high priority link
+}
+break
+}
+}
+}
 
-	// If we have any errors but also some successes, log errors but continue
-	if len(collectedErrors) > 0 {
-		Log(fmt.Sprintf("Completed with %d errors: %v", len(collectedErrors), collectedErrors))
-	}
+results <- result{
+index: idx,
+links: links,
+}
+}(i, sourceUrl)
+}
 
-	// Flatten and return results
-	allLinks := flattenResults(orderedResults)
-	if len(allLinks) == 0 {
-		return nil, fmt.Errorf("no valid links found from %d URLs: %v", len(validURLs), collectedErrors)
-	}
+// Collect results with timeout
+timeout := time.After(10 * time.Second)
+var collectedErrors []error
+successCount := 0
 
-	return allLinks, nil
+// First, try to get a high priority link
+select {
+case links := <-highPriorityLink:
+// Continue extracting other links in background
+go collectRemainingResults(results, orderedResults, &successCount, &collectedErrors, remainingURLs)
+return links, nil
+case <-time.After(2 * time.Second): // Wait only briefly for high priority link
+// No high priority link found quickly, proceed with normal collection
+}
+
+// Continue with existing result collection logic
+// Collect results maintaining order
+for successCount < len(validURLs) {
+select {
+case res := <-results:
+if res.err != nil {
+Log(fmt.Sprintf("Error processing URL %d: %v", res.index+1, res.err))
+collectedErrors = append(collectedErrors, fmt.Errorf("URL %d: %w", res.index+1, res.err))
+} else {
+orderedResults[res.index] = res.links
+successCount++
+Log(fmt.Sprintf("Successfully processed URL %d/%d", res.index+1, len(validURLs)))
+}
+case <-timeout:
+if successCount > 0 {
+Log(fmt.Sprintf("Timeout reached with %d/%d successful results", successCount, len(validURLs)))
+// Flatten available results
+return flattenResults(orderedResults), nil
+}
+return nil, fmt.Errorf("timeout waiting for results after %d successful responses", successCount)
+}
+}
+
+// If we have any errors but also some successes, log errors but continue
+if len(collectedErrors) > 0 {
+Log(fmt.Sprintf("Completed with %d errors: %v", len(collectedErrors), collectedErrors))
+}
+
+// Flatten and return results
+allLinks := flattenResults(orderedResults)
+if len(allLinks) == 0 {
+return nil, fmt.Errorf("no valid links found from %d URLs: %v", len(validURLs), collectedErrors)
+}
+
+return allLinks, nil
 }
 
 // Helper function to collect remaining results in background
 func collectRemainingResults(results chan result, orderedResults [][]string, successCount *int, collectedErrors *[]error, remainingURLs int) {
-	for *successCount < remainingURLs {
-		select {
-		case res := <-results:
-			if res.err != nil {
-				Log(fmt.Sprintf("Error processing URL %d: %v", res.index+1, res.err))
-				*collectedErrors = append(*collectedErrors, fmt.Errorf("URL %d: %w", res.index+1, res.err))
-			} else {
-				orderedResults[res.index] = res.links
-				*successCount++
-				Log(fmt.Sprintf("Successfully processed URL %d/%d", res.index+1, remainingURLs))
-			}
-		case <-time.After(10 * time.Second):
-			return
-		}
-	}
+for *successCount < remainingURLs {
+select {
+case res := <-results:
+if res.err != nil {
+Log(fmt.Sprintf("Error processing URL %d: %v", res.index+1, res.err))
+*collectedErrors = append(*collectedErrors, fmt.Errorf("URL %d: %w", res.index+1, res.err))
+} else {
+orderedResults[res.index] = res.links
+*successCount++
+Log(fmt.Sprintf("Successfully processed URL %d/%d", res.index+1, remainingURLs))
+}
+case <-time.After(10 * time.Second):
+return
+}
+}
 }
 
 // converts the ordered slice of link slices into a single slice
 func flattenResults(results [][]string) []string {
-	var totalLen int
-	for _, r := range results {
-		totalLen += len(r)
-	}
+var totalLen int
+for _, r := range results {
+totalLen += len(r)
+}
 
-	allLinks := make([]string, 0, totalLen)
-	for _, links := range results {
-		allLinks = append(allLinks, links...)
-	}
-	return allLinks
+allLinks := make([]string, 0, totalLen)
+for _, links := range results {
+allLinks = append(allLinks, links...)
+}
+return allLinks
 }
