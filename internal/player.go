@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,25 @@ import (
 )
 
 var logFile = "debug.log"
+
+// getHTTPHeadersForURL returns the HTTP headers needed for specific video hosts
+func getHTTPHeadersForURL(link string) []string {
+	parsedURL, err := url.Parse(link)
+	if err != nil {
+		return []string{}
+	}
+
+	host := parsedURL.Host
+	
+	// fast4speed.rsvp requires Referer header from allanime.to
+	if strings.Contains(host, "fast4speed.rsvp") {
+		return []string{
+			fmt.Sprintf("Referer: https://allanime.to"),
+		}
+	}
+	
+	return []string{}
+}
 
 func getMPVPath() (string, error) {
 	exePath, err := os.Executable()
@@ -100,10 +120,20 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 	// Prepare arguments for mpv
 	var mpvArgs []string
 	mpvArgs = append(mpvArgs, "--no-terminal", "--really-quiet", fmt.Sprintf("--input-ipc-server=%s", mpvSocketPath), link)
+	
+	// Add HTTP headers if required for this URL
+	headers := getHTTPHeadersForURL(link)
+	for _, header := range headers {
+		Log(fmt.Sprintf("Adding HTTP header for %s: %s", link, header))
+		mpvArgs = append(mpvArgs, fmt.Sprintf("--http-header-fields=%s", header))
+	}
+	
 	// Add any additional arguments passed
 	if len(args) > 0 {
 		mpvArgs = append(mpvArgs, args...)
 	}
+	
+	Log(fmt.Sprintf("Starting mpv with args: %v", mpvArgs))
 
 	if runtime.GOOS == "windows" {
 		// Get the path to mpv.exe for Windows
