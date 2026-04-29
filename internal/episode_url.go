@@ -1,31 +1,36 @@
 package internal
 
 import (
-"bytes"
-"crypto/aes"
-"crypto/cipher"
-"crypto/sha256"
-"encoding/base64"
-"encoding/binary"
-"encoding/json"
-"fmt"
-"io"
-"net/http"
-"regexp"
-"strings"
-"time"
-"unicode"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+	"unicode"
 )
 
 type allanimeResponse struct {
-Data struct {
-Episode struct {
-SourceUrls []struct {
-SourceUrl string `json:"sourceUrl"`
-} `json:"sourceUrls"`
-} `json:"episode"`
-Tobeparsed string `json:"tobeparsed"`
-} `json:"data"`
+	Data struct {
+		M          string `json:"_m"`
+		Tobeparsed string `json:"tobeparsed"`
+		Episode    struct {
+			SourceUrls []struct {
+				SourceUrl  string `json:"sourceUrl"`
+				SourceName string `json:"sourceName"`
+			} `json:"sourceUrls"`
+		} `json:"episode"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
 }
 
 type result struct {
@@ -35,55 +40,72 @@ err   error
 }
 
 func decodeTobeparsed(blob string) string {
-key := []byte("SimtVuagFbGR2K7P")
-hash := sha256.Sum256(key)
+	key := []byte("Xot36i3lK3:v1")
+	hash := sha256.Sum256(key)
 
-data, err := base64.StdEncoding.DecodeString(blob)
-if err != nil {
-Log(fmt.Sprint("Error decoding base64:", err))
-return ""
-}
+	data, err := base64.StdEncoding.DecodeString(blob)
+	if err != nil {
+		Log(fmt.Sprint("Error decoding base64:", err))
+		return ""
+	}
 
-if len(data) < 28 {
-Log(fmt.Sprint("Data too short to contain IV and ciphertext"))
-return ""
-}
+	if len(data) < 29 {
+		Log(fmt.Sprintf("Data too short to contain tobeparsed payload: %d < 29", len(data)))
+		return ""
+	}
 
-iv := data[:12]
-ct := data[12:]
+	// The payload format is: 1-byte header, 12-byte IV, ciphertext, 16-byte trailer.
+	iv := data[1:13]
+	ctLen := len(data) - 13 - 16
+	if ctLen <= 0 {
+		Log(fmt.Sprintf("Ciphertext length is invalid in tobeparsed payload: %d", ctLen))
+		return ""
+	}
+	ct := data[13 : 13+ctLen]
 
-ctrIV := make([]byte, 16)
-copy(ctrIV, iv)
-binary.BigEndian.PutUint32(ctrIV[12:], uint32(2))
+	Log(fmt.Sprintf("Decryption params - Data len: %d, IV len: %d, Ciphertext len: %d", len(data), len(iv), len(ct)))
 
-block, err := aes.NewCipher(hash[:])
-if err != nil {
-Log(fmt.Sprint("Error creating cipher:", err))
-return ""
-}
+	ctrIV := make([]byte, 16)
+	copy(ctrIV, iv)
+	binary.BigEndian.PutUint32(ctrIV[12:], uint32(2))
 
-stream := cipher.NewCTR(block, ctrIV)
-plain := make([]byte, len(ct))
-stream.XORKeyStream(plain, ct)
+	block, err := aes.NewCipher(hash[:])
+	if err != nil {
+		Log(fmt.Sprint("Error creating cipher:", err))
+		return ""
+	}
 
-result := string(plain)
-result = strings.ReplaceAll(result, "{", "\n")
-result = strings.ReplaceAll(result, "}", "\n")
+	stream := cipher.NewCTR(block, ctrIV)
+	plain := make([]byte, len(ct))
+	stream.XORKeyStream(plain, ct)
 
-re := regexp.MustCompile(`"sourceUrl":"--([^"]+)".*"sourceName":"([^"]+)"`)
-matches := re.FindAllStringSubmatch(result, -1)
+	result := string(plain)
+	Log(fmt.Sprintf("Decrypted raw: %s", result))
+	
+	result = strings.ReplaceAll(result, "{", "\n")
+	result = strings.ReplaceAll(result, "}", "\n")
 
-var sb strings.Builder
-for _, match := range matches {
-if len(match) == 3 {
-sb.WriteString(match[2])
-sb.WriteString(" :")
-sb.WriteString(match[1])
-sb.WriteString("\n")
-}
-}
+	Log(fmt.Sprintf("After replace: %s", result))
 
-return sb.String()
+	re := regexp.MustCompile(`"sourceUrl":"--([^"]+)".*"sourceName":"([^"]+)"`)
+	matches := re.FindAllStringSubmatch(result, -1)
+
+	Log(fmt.Sprintf("Regex matches found: %d", len(matches)))
+	for i, match := range matches {
+		Log(fmt.Sprintf("Match %d: sourceUrl='%s', sourceName='%s'", i, match[1], match[2]))
+	}
+
+	var sb strings.Builder
+	for _, match := range matches {
+		if len(match) == 3 {
+			sb.WriteString(match[2])
+			sb.WriteString(" :")
+			sb.WriteString(match[1])
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
 }
 
 func decodeProviderID(encoded string) string {
@@ -209,90 +231,133 @@ return videoData
 // - []string: a list of links for specified episode.
 // - error: an error if the episode is not found or if there is an issue during the search.
 func GetEpisodeURL(config CurdConfig, id string, epNo int) ([]string, error) {
-query := `query($showId:String!,$translationType:VaildTranslationTypeEnumType!,$episodeString:String!){episode(showId:$showId,translationType:$translationType,episodeString:$episodeString){episodeString sourceUrls}}`
+	const (
+		episodeQueryHash = "d405d0edd690624b66baba3068e0edc3ac90f1597d898a1ec8db4e5c43c00fec"
+	)
 
-variables := map[string]interface{}{
-"showId":          id,
-"translationType": config.SubOrDub,
-"episodeString":   fmt.Sprintf("%d", epNo),
-}
+	variables := map[string]interface{}{
+		"showId":          id,
+		"translationType": config.SubOrDub,
+		"episodeString":   fmt.Sprintf("%d", epNo),
+	}
 
-// Build POST request body
-requestBody, err := json.Marshal(map[string]interface{}{
-"query":     query,
-"variables": variables,
-})
-if err != nil {
-return nil, fmt.Errorf("failed to marshal request body: %w", err)
-}
+	extensions := map[string]interface{}{
+		"persistedQuery": map[string]interface{}{
+			"version":    1,
+			"sha256Hash": episodeQueryHash,
+		},
+	}
 
-client := &http.Client{}
-req, err := http.NewRequest("POST", "https://api.allanime.day/api", bytes.NewBuffer(requestBody))
-if err != nil {
-return nil, err
-}
+	variablesJSON, err := json.Marshal(variables)
+	if err != nil {
+		Log(fmt.Sprintf("Failed to marshal variables: %v", err))
+		return nil, fmt.Errorf("failed to marshal variables: %w", err)
+	}
 
-req.Header.Set("Content-Type", "application/json")
-req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
-req.Header.Set("Referer", "https://allanime.to")
-req.Header.Set("Origin", "https://allanime.to")
+	extensionsJSON, err := json.Marshal(extensions)
+	if err != nil {
+		Log(fmt.Sprintf("Failed to marshal extensions: %v", err))
+		return nil, fmt.Errorf("failed to marshal extensions: %w", err)
+	}
 
-resp, err := client.Do(req)
-if err != nil {
-return nil, err
-}
-defer resp.Body.Close()
+	persistedURL := "https://api.allanime.day/api?variables=" + url.QueryEscape(string(variablesJSON)) + "&extensions=" + url.QueryEscape(string(extensionsJSON))
 
-body, err := io.ReadAll(resp.Body)
-if err != nil {
-return nil, err
-}
+	Log(fmt.Sprintf("Fetching episode URL from: %s", persistedURL))
 
-var response allanimeResponse
-err = json.Unmarshal(body, &response)
-if err != nil {
-Log(fmt.Sprint("Error parsing JSON: ", err))
-return nil, err
-}
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", persistedURL, nil)
+	if err != nil {
+		return nil, err
+	}
 
-// Check if the response contains encrypted data (tobeparsed field)
-if response.Data.Tobeparsed != "" {
-Log("Found tobeparsed field, using decoded response")
-decoded := decodeTobeparsed(response.Data.Tobeparsed)
-lines := strings.Split(strings.TrimSpace(decoded), "\n")
-var validURLs []string
-for _, line := range lines {
-if parts := strings.Split(line, " :"); len(parts) == 2 {
-validURLs = append(validURLs, "--"+parts[1])
-}
-}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
+	req.Header.Set("Referer", "https://allanime.to")
 
-if len(validURLs) == 0 {
-return nil, fmt.Errorf("no valid source URLs found in decoded tobeparsed")
-}
+	resp, err := client.Do(req)
+	if err != nil {
+		Log(fmt.Sprintf("Error making request: %v", err))
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-return getLinksFromURLs(validURLs)
-}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		Log(fmt.Sprintf("Error reading response body: %v", err))
+		return nil, err
+	}
+
+	Log(fmt.Sprintf("API Response Status: %d, Body: %s", resp.StatusCode, string(body)))
+
+	var response allanimeResponse
+	err = json.Unmarshal(body, &response)
+	if err != nil {
+		Log(fmt.Sprintf("Error parsing JSON: %v", err))
+		Log(fmt.Sprintf("Response body: %s", string(body)))
+		return nil, err
+	}
+
+	// Check for GraphQL errors
+	if len(response.Errors) > 0 {
+		Log(fmt.Sprintf("GraphQL error in response: %v", response.Errors[0].Message))
+		return nil, fmt.Errorf("GraphQL error: %s", response.Errors[0].Message)
+	}
+
+	// Check if the response contains encrypted data (tobeparsed field)
+	if response.Data.Tobeparsed != "" {
+		Log("Found tobeparsed field, using decoded response")
+		decoded := decodeTobeparsed(response.Data.Tobeparsed)
+		Log(fmt.Sprintf("Decoded tobeparsed result: %s", decoded))
+		lines := strings.Split(strings.TrimSpace(decoded), "\n")
+		Log(fmt.Sprintf("Decoded lines count: %d", len(lines)))
+		var validURLs []string
+		for i, line := range lines {
+			Log(fmt.Sprintf("Line %d: '%s'", i, line))
+			if line == "" {
+				continue
+			}
+			if parts := strings.Split(line, " :"); len(parts) == 2 {
+				url := "--" + parts[1]
+				Log(fmt.Sprintf("Extracted URL: %s", url))
+				validURLs = append(validURLs, url)
+			}
+		}
+
+		Log(fmt.Sprintf("Total valid URLs extracted: %d", len(validURLs)))
+		if len(validURLs) == 0 {
+			Log("No valid source URLs found in decoded tobeparsed")
+			return nil, fmt.Errorf("no valid source URLs found in decoded tobeparsed")
+		}
+
+		Log(fmt.Sprintf("Calling getLinksFromURLs with %d URLs", len(validURLs)))
+		return getLinksFromURLs(validURLs)
+	}
 
 // Pre-count valid URLs and create slice to preserve order
 validURLs := make([]string, 0)
 highestPriority := -1
 var highestPriorityURL string
 
-for _, url := range response.Data.Episode.SourceUrls {
-if len(url.SourceUrl) > 2 && unicode.IsDigit(rune(url.SourceUrl[2])) {
-decodedURL := decodeProviderID(url.SourceUrl[2:])
-if strings.Contains(decodedURL, LinkPriorities[0]) {
-priority := int(url.SourceUrl[2] - '0')
-if priority > highestPriority {
-highestPriority = priority
-highestPriorityURL = url.SourceUrl
-}
-} else {
-validURLs = append(validURLs, url.SourceUrl)
-}
-}
-}
+	for _, url := range response.Data.Episode.SourceUrls {
+		if len(url.SourceUrl) == 0 {
+			continue
+		}
+
+		if len(url.SourceUrl) > 2 && unicode.IsDigit(rune(url.SourceUrl[2])) {
+			decodedURL := decodeProviderID(url.SourceUrl[2:])
+			if strings.Contains(decodedURL, LinkPriorities[0]) {
+				priority := int(url.SourceUrl[2] - '0')
+				if priority > highestPriority {
+					highestPriority = priority
+					highestPriorityURL = url.SourceUrl
+				}
+			} else {
+				validURLs = append(validURLs, url.SourceUrl)
+			}
+		} else {
+			// Fallback: add URLs that don't match the expected encoded format
+			validURLs = append(validURLs, url.SourceUrl)
+		}
+	}
 
 // If we found a highest priority URL, use only that
 if highestPriorityURL != "" {
