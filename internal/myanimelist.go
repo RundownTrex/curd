@@ -717,6 +717,12 @@ func UpdateMALAnimeStatus(token string, mediaID int, status string) error {
 		"status": {malStatus},
 	}
 
+	// Set start date when marking as currently watching
+	if status == "CURRENT" {
+		currentDate := time.Now().Format("2006-01-02")
+		data.Set("start_date", currentDate)
+	}
+
 	// Set completion date when marking as completed
 	if status == "COMPLETED" {
 		// Get current date in YYYY-MM-DD format
@@ -826,6 +832,10 @@ func AddAnimeToMALWatchingList(animeID int, token string) error {
 	data := url.Values{
 		"status": {"watching"},
 	}
+
+	// Set start date to current date
+	currentDate := time.Now().Format("2006-01-02")
+	data.Set("start_date", currentDate)
 
 	req, err := http.NewRequest("PATCH", apiURL, strings.NewReader(data.Encode()))
 	if err != nil {

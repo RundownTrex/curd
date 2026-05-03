@@ -715,7 +715,7 @@ func AddNewAnime(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseA
 	return anilistSelectedOption
 }
 
-func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAnimes *[]Anime) {
+func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAnimes *[]Anime, databaseFile string) {
 	var err error
 	var anilistUserData map[string]interface{}
 	var anilistUserDataPreview map[string]interface{}
@@ -810,7 +810,7 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 				goBack := UpdateAnimeEntry(userCurdConfig, user)
 				if goBack {
 					// User selected back, so restart SetupCurd to show main menu again
-					SetupCurd(userCurdConfig, anime, user, databaseAnimes)
+					SetupCurd(userCurdConfig, anime, user, databaseAnimes, databaseFile)
 					return
 				}
 				ExitCurd(nil)
@@ -818,7 +818,7 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 				ClearScreen()
 				DownloadAnimeMenu(userCurdConfig, user, databaseAnimes)
 				// After download, go back to main menu
-				SetupCurd(userCurdConfig, anime, user, databaseAnimes)
+				SetupCurd(userCurdConfig, anime, user, databaseAnimes, databaseFile)
 				return
 			} else if categorySelection.Key == "UNTRACKED" {
 				ClearScreen()
@@ -906,7 +906,7 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 
 		// Handle "Back" option - restart SetupCurd to show category selection again
 		if anilistSelectedOption.Key == "back" {
-			SetupCurd(userCurdConfig, anime, user, databaseAnimes)
+			SetupCurd(userCurdConfig, anime, user, databaseAnimes, databaseFile)
 			return
 		}
 
@@ -1017,6 +1017,12 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 				ExitCurd(nil)
 			}
 			anime.AllanimeId = selectedAllanimeAnime.Key
+
+			// Save the anime selection to database immediately so we don't ask again
+			err = LocalUpdateAnime(databaseFile, anime.AnilistId, anime.AllanimeId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, anime.Ep.Duration, GetAnimeName(*anime))
+			if err != nil {
+				Log(fmt.Sprintf("Warning: Failed to save anime selection to database: %v", err))
+			}
 		}
 	}
 

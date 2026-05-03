@@ -241,7 +241,7 @@ func main() {
 		// internal.ExitCurd(fmt.Errorf("Added new anime!"))
 	}
 
-	internal.SetupCurd(&userCurdConfig, &anime, &user, &databaseAnimes)
+	internal.SetupCurd(&userCurdConfig, &anime, &user, &databaseAnimes, databaseFile)
 
 	// Find anime in user's list using the correct ID based on tracking service
 	var idToFind string
