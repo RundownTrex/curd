@@ -966,10 +966,11 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 	if animePointer != nil {
 		anime.AllanimeId = animePointer.AllanimeId
 
-		// Safety check: if the ID contains a colon (legacy provider prefix)
-		// and we are no longer using multi-provider logic, clear it to force a re-link.
+		// Safety check: if the ID contains a colon it is in the old
+		// "provider:id" multi-provider format and is no longer valid.
+		// Clear it so the correct ID gets selected and saved below.
 		if strings.Contains(anime.AllanimeId, ":") {
-			Log(fmt.Sprintf("Legacy provider ID detected: %s. Clearing fixed ID to force re-link.", anime.AllanimeId))
+			Log(fmt.Sprintf("Legacy provider ID detected: %s. Clearing to force re-link.", anime.AllanimeId))
 			anime.AllanimeId = ""
 		}
 
@@ -1096,14 +1097,21 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		}
 	}
 
-	if anime.TotalEpisodes == 0 {
-		// Get updated anime data
+	// Always fetch up-to-date anime metadata (airing status + total episodes).
+	// This ensures anime.IsAiring is correctly set so we don't accidentally
+	// show a rating prompt or mark a seasonal anime as completed when the user
+	// catches up to the latest released episode.
+	{
 		updatedAnime, err := GetAnimeDataByID(anime.AnilistId, user.Token)
 		if err != nil {
 			Log(fmt.Sprintf("Error getting updated anime data: %v", err))
 		} else {
-			anime.TotalEpisodes = updatedAnime.TotalEpisodes
-			Log(fmt.Sprintf("Updated total episodes: %d", anime.TotalEpisodes))
+			if anime.TotalEpisodes == 0 {
+				anime.TotalEpisodes = updatedAnime.TotalEpisodes
+				Log(fmt.Sprintf("Updated total episodes: %d", anime.TotalEpisodes))
+			}
+			anime.IsAiring = updatedAnime.IsAiring
+			Log(fmt.Sprintf("Anime IsAiring: %v", anime.IsAiring))
 		}
 	}
 
@@ -1554,8 +1562,11 @@ func StartNextEpisode(anime *Anime, userCurdConfig *CurdConfig, databaseFile str
 	// Save previous episode number for progress update
 	prevEpisode := anime.Ep.Number
 
-	// Check if we just completed the last episode
-	if anime.TotalEpisodes > 0 && anime.Ep.Number == anime.TotalEpisodes {
+	// Check if we just completed the last episode of a FINISHED series.
+	// For currently-airing anime, skip this block entirely so we don't show the
+	// rating prompt or mark the series as completed just because the user caught
+	// up with the latest released episode.
+	if anime.TotalEpisodes > 0 && anime.Ep.Number == anime.TotalEpisodes && !anime.IsAiring {
 		// Handle scoring and completion for the last episode
 		HandleLastEpisodeCompletion(userCurdConfig, anime, user)
 
@@ -1570,6 +1581,22 @@ func StartNextEpisode(anime *Anime, userCurdConfig *CurdConfig, databaseFile str
 		}
 
 		CurdOut("Series completed!")
+		ExitCurd(nil)
+		return
+	}
+
+	// For airing anime where user has caught up to the latest released episode,
+	// just update progress and exit gracefully without rating or marking complete.
+	if anime.IsAiring && anime.TotalEpisodes > 0 && anime.Ep.Number == anime.TotalEpisodes {
+		if !anime.Rewatching {
+			err := UpdateAnimeProgressDual(user.AnilistToken, user.MalToken, anime.AnilistId, anime.MalId, prevEpisode, userCurdConfig)
+			if err != nil {
+				Log("Error updating progress for airing anime: " + err.Error())
+			} else {
+				CurdOut(fmt.Sprintf("Anime progress updated! Latest watched episode: %d", prevEpisode))
+			}
+		}
+		CurdOut("You're caught up! New episodes air weekly.")
 		ExitCurd(nil)
 		return
 	}
@@ -1623,8 +1650,17 @@ func StartNextEpisode(anime *Anime, userCurdConfig *CurdConfig, databaseFile str
 	CurdOut(fmt.Sprint("Starting next episode: ", anime.Ep.Number))
 }
 
-// HandleLastEpisodeCompletion handles scoring and completion for the last episode
+// HandleLastEpisodeCompletion handles scoring and completion for the last episode.
+// It is only called for anime that have FINISHED airing (IsAiring == false).
 func HandleLastEpisodeCompletion(userCurdConfig *CurdConfig, anime *Anime, user *User) {
+	// Safety guard: never rate or mark complete if the anime is still airing.
+	// This prevents false-positive completions when the user catches up to the
+	// latest released episode of a seasonal series.
+	if anime.IsAiring {
+		Log("HandleLastEpisodeCompletion called for an airing anime – skipping rating/completion.")
+		return
+	}
+
 	// Check if this is the last episode and scoring is enabled
 	if userCurdConfig.ScoreOnCompletion && anime.TotalEpisodes > 0 && anime.Ep.Number == anime.TotalEpisodes {
 		// Prompt user to score the anime

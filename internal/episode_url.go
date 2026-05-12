@@ -87,7 +87,7 @@ func decodeTobeparsed(blob string) string {
 
 	Log(fmt.Sprintf("After replace: %s", result))
 
-	re := regexp.MustCompile(`"sourceUrl":"--([^"]+)".*"sourceName":"([^"]+)"`)
+	re := regexp.MustCompile(`"sourceUrl":"--([^"]+)"[^}]*?"sourceName":"([^"]+)"`)
 	matches := re.FindAllStringSubmatch(result, -1)
 
 	Log(fmt.Sprintf("Regex matches found: %d", len(matches)))
@@ -190,7 +190,7 @@ return videoData
 }
 
 // Add the headers
-req.Header.Set("Referer", "https://allanime.to")
+req.Header.Set("Referer", "https://allmanga.to")
 req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
 
 // Send the request
@@ -271,7 +271,7 @@ func GetEpisodeURL(config CurdConfig, id string, epNo int) ([]string, error) {
 	}
 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
-	req.Header.Set("Referer", "https://allanime.to")
+	req.Header.Set("Referer", "https://allmanga.to")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -324,12 +324,12 @@ func GetEpisodeURL(config CurdConfig, id string, epNo int) ([]string, error) {
 
 		Log(fmt.Sprintf("Total valid URLs extracted: %d", len(validURLs)))
 		if len(validURLs) == 0 {
-			Log("No valid source URLs found in decoded tobeparsed")
-			return nil, fmt.Errorf("no valid source URLs found in decoded tobeparsed")
+			Log("No valid source URLs found in decoded tobeparsed, falling back to sourceUrls")
+			// Fall through to process sourceUrls below
+		} else {
+			Log(fmt.Sprintf("Calling getLinksFromURLs with %d URLs", len(validURLs)))
+			return getLinksFromURLs(validURLs)
 		}
-
-		Log(fmt.Sprintf("Calling getLinksFromURLs with %d URLs", len(validURLs)))
-		return getLinksFromURLs(validURLs)
 	}
 
 // Pre-count valid URLs and create slice to preserve order
@@ -382,15 +382,23 @@ highPriorityLink := make(chan []string, 1)
 // Create rate limiter
 rateLimiter := time.NewTicker(50 * time.Millisecond)
 defer rateLimiter.Stop()
-
 // Launch goroutines
 remainingURLs := len(validURLs)
 for i, sourceUrl := range validURLs {
 go func(idx int, url string) {
-<-rateLimiter.C // Rate limit the requests
+	<-rateLimiter.C // Rate limit the requests
 
-decodedProviderID := decodeProviderID(url[2:])
-Log(fmt.Sprintf("Processing URL %d/%d with provider ID: %s", idx+1, len(validURLs), decodedProviderID))
+	// URLs from the tobeparsed path are already decoded (e.g. "/clock/id" or "https://...").
+	// Only call decodeProviderID for the old hex-encoded sourceUrls format.
+	rawPath := url[2:]
+	var decodedProviderID string
+	if strings.HasPrefix(rawPath, "/") || strings.HasPrefix(rawPath, "http") {
+		decodedProviderID = rawPath
+		Log(fmt.Sprintf("Processing URL %d/%d (already decoded): %s", idx+1, len(validURLs), decodedProviderID))
+	} else {
+		decodedProviderID = decodeProviderID(rawPath)
+		Log(fmt.Sprintf("Processing URL %d/%d with provider ID: %s", idx+1, len(validURLs), decodedProviderID))
+	}
 
 extractedLinks := extractLinks(decodedProviderID)
 

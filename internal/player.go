@@ -16,23 +16,21 @@ import (
 
 var logFile = "debug.log"
 
-// getHTTPHeadersForURL returns the HTTP headers needed for specific video hosts
-func getHTTPHeadersForURL(link string) []string {
+// getReferrerForURL returns the referrer needed for specific video hosts
+func getReferrerForURL(link string) string {
 	parsedURL, err := url.Parse(link)
 	if err != nil {
-		return []string{}
+		return ""
 	}
 
 	host := parsedURL.Host
 	
-	// fast4speed.rsvp requires Referer header from allanime.to
+	// fast4speed.rsvp requires Referer header from allmanga.to
 	if strings.Contains(host, "fast4speed.rsvp") {
-		return []string{
-			fmt.Sprintf("Referer: https://allanime.to"),
-		}
+		return "https://allmanga.to"
 	}
 	
-	return []string{}
+	return ""
 }
 
 func getMPVPath() (string, error) {
@@ -46,6 +44,11 @@ func getMPVPath() (string, error) {
 }
 
 func StartVideo(link string, args []string, title string, anime *Anime) (string, error) {
+	// Validate that we have a link to play
+	if link == "" {
+		return "", fmt.Errorf("cannot start video: no valid link provided")
+	}
+
 	var command *exec.Cmd
 	var mpvSocketPath string
 	var err error
@@ -119,14 +122,17 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 
 	// Prepare arguments for mpv
 	var mpvArgs []string
-	mpvArgs = append(mpvArgs, "--no-terminal", "--really-quiet", fmt.Sprintf("--input-ipc-server=%s", mpvSocketPath), link)
+	mpvArgs = append(mpvArgs, "--no-terminal", "--really-quiet", fmt.Sprintf("--input-ipc-server=%s", mpvSocketPath))
 	
-	// Add HTTP headers if required for this URL
-	headers := getHTTPHeadersForURL(link)
-	for _, header := range headers {
-		Log(fmt.Sprintf("Adding HTTP header for %s: %s", link, header))
-		mpvArgs = append(mpvArgs, fmt.Sprintf("--http-header-fields=%s", header))
+	// Add referrer if required for this URL
+	referrer := getReferrerForURL(link)
+	if referrer != "" {
+		Log(fmt.Sprintf("Adding referrer for %s: %s", link, referrer))
+		mpvArgs = append(mpvArgs, fmt.Sprintf("--referrer=%s", referrer))
 	}
+	
+	// Add the video URL
+	mpvArgs = append(mpvArgs, link)
 	
 	// Add any additional arguments passed
 	if len(args) > 0 {

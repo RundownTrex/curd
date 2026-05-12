@@ -172,15 +172,21 @@ func GetAnimeName(anime Anime) string {
 	return anime.Title.Romaji
 }
 
-// Function to update or add a new anime entry
+// Function to update or add a new anime entry.
+// Matches solely on AnilistId so that updating the AllanimeId (e.g. after the
+// first manual provider selection) never creates a duplicate row.
 func LocalUpdateAnime(databaseFile string, anilistID int, allanimeID string, watchingEpisode int, playbackTime int, animeDuration int, animeName string) error {
 	// Read existing entries
 	animeList := LocalGetAllAnime(databaseFile)
 
-	// Find and update existing entry or add new one
+	// Find and update existing entry (match on AnilistId only).
 	updated := false
 	for i, anime := range animeList {
-		if anime.AnilistId == anilistID && anime.AllanimeId == allanimeID {
+		if anime.AnilistId == anilistID {
+			// Always refresh the AllanimeId in case it was just selected.
+			if allanimeID != "" {
+				animeList[i].AllanimeId = allanimeID
+			}
 			animeList[i].Ep.Number = watchingEpisode
 			animeList[i].Ep.Player.PlaybackTime = playbackTime
 			animeList[i].Ep.Duration = animeDuration
@@ -210,6 +216,28 @@ func LocalUpdateAnime(databaseFile string, anilistID int, allanimeID string, wat
 		animeList = append(animeList, newAnime)
 	}
 
+	// Deduplicate: if there are multiple rows for the same AnilistId, keep only
+	// the last one (which has the most recent AllanimeId and progress).
+	seen := make(map[int]int) // AnilistId -> index of the canonical entry
+	deduped := make([]Anime, 0, len(animeList))
+	for _, a := range animeList {
+		if idx, exists := seen[a.AnilistId]; exists {
+			// Prefer the entry with a non-empty AllanimeId.
+			if deduped[idx].AllanimeId == "" && a.AllanimeId != "" {
+				deduped[idx] = a
+			} else if a.AllanimeId != "" {
+				// Both have IDs – keep the one with higher progress.
+				if a.Ep.Number > deduped[idx].Ep.Number {
+					deduped[idx] = a
+				}
+			}
+		} else {
+			seen[a.AnilistId] = len(deduped)
+			deduped = append(deduped, a)
+		}
+	}
+	animeList = deduped
+
 	// Write updated list back to file
 	file, err := os.Create(databaseFile)
 	if err != nil {
@@ -238,11 +266,14 @@ func LocalUpdateAnime(databaseFile string, anilistID int, allanimeID string, wat
 	return nil
 }
 
-// Function to find an anime by either Anilist ID or Allanime ID
+// Function to find an anime by either Anilist ID or Allanime ID.
+// Returns a pointer to a heap-allocated copy so the caller always gets a stable
+// value (the range-loop variable is reused across iterations in pre-Go 1.22).
 func LocalFindAnime(animeList []Anime, anilistID int, allanimeID string) *Anime {
 	for _, anime := range animeList {
-		if anime.AnilistId == anilistID || anime.AllanimeId == allanimeID {
-			return &anime
+		if anime.AnilistId == anilistID || (allanimeID != "" && anime.AllanimeId == allanimeID) {
+			copy := anime // explicit heap allocation
+			return &copy
 		}
 	}
 	return nil
