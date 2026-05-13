@@ -151,72 +151,121 @@ result = strings.ReplaceAll(result, "/clock", "/clock.json")
 return result
 }
 
+func extractMp4UploadLinks(pageURL string) map[string]interface{} {
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", pageURL, nil)
+	var videoData map[string]interface{}
+	if err != nil {
+		Log(fmt.Sprint("Error creating mp4upload request:", err))
+		return videoData
+	}
+	req.Header.Set("Referer", "https://youtu-chan.com")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		Log(fmt.Sprint("Error fetching mp4upload page:", err))
+		return videoData
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		Log(fmt.Sprint("Error reading mp4upload response:", err))
+		return videoData
+	}
+
+	// Extract src from: player.src("...") or src: "..."
+	re := regexp.MustCompile(`(?:player\.src|src)\s*[:(]\s*"(https?://[^"]+\.mp4[^"]*)"`) 
+	matches := re.FindStringSubmatch(string(body))
+	if len(matches) < 2 {
+		Log("mp4upload: no video src found in page")
+		return videoData
+	}
+
+	vidURL := matches[1]
+	Log(fmt.Sprintf("mp4upload extracted URL: %s", vidURL))
+	return map[string]interface{}{
+		"links": []interface{}{
+			map[string]interface{}{
+				"link": vidURL,
+			},
+		},
+	}
+}
+
 func extractLinks(provider_id string) map[string]interface{} {
-// Check if provider_id is already a full URL (external link)
-if strings.HasPrefix(provider_id, "http://") || strings.HasPrefix(provider_id, "https://") {
-// It's an external direct video link, return it as-is
-cleanedURL := provider_id
-// Clean up any double slashes in the URL (except after protocol)
-if strings.Contains(cleanedURL, "://") {
-parts := strings.SplitN(cleanedURL, "://", 2)
-if len(parts) == 2 {
-protocol := parts[0]
-rest := parts[1]
-// Replace any double slashes in the rest of the URL
-rest = strings.ReplaceAll(rest, "//", "/")
-cleanedURL = protocol + "://" + rest
-}
-}
+	// Check if provider_id is already a full URL (external link)
+	if strings.HasPrefix(provider_id, "http://") || strings.HasPrefix(provider_id, "https://") {
+		// mp4upload: scrape the page for the actual video src
+		if strings.Contains(provider_id, "mp4upload") {
+			Log(fmt.Sprintf("mp4upload URL detected, scraping page: %s", provider_id))
+			return extractMp4UploadLinks(provider_id)
+		}
 
-Log(fmt.Sprintf("Direct external link detected: %s -> %s", provider_id, cleanedURL))
-return map[string]interface{}{
-"links": []interface{}{
-map[string]interface{}{
-"link": cleanedURL,
-},
-},
-}
-}
+		// It's an external direct video link, return it as-is
+		cleanedURL := provider_id
+		// Clean up any double slashes in the URL (except after protocol)
+		if strings.Contains(cleanedURL, "://") {
+			parts := strings.SplitN(cleanedURL, "://", 2)
+			if len(parts) == 2 {
+				protocol := parts[0]
+				rest := parts[1]
+				// Replace any double slashes in the rest of the URL
+				rest = strings.ReplaceAll(rest, "//", "/")
+				cleanedURL = protocol + "://" + rest
+			}
+		}
 
-// It's a relative path for allanime API
-allanime_base := "https://allanime.day"
-url := allanime_base + provider_id
-client := &http.Client{}
-req, err := http.NewRequest("GET", url, nil)
-var videoData map[string]interface{}
-if err != nil {
-Log(fmt.Sprint("Error creating request:", err))
-return videoData
-}
+		Log(fmt.Sprintf("Direct external link detected: %s -> %s", provider_id, cleanedURL))
+		return map[string]interface{}{
+			"links": []interface{}{
+				map[string]interface{}{
+					"link": cleanedURL,
+				},
+			},
+		}
+	}
 
-// Add the headers
-req.Header.Set("Referer", "https://allmanga.to")
-req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
+	// It's a relative path for allanime API
+	allanime_base := "https://allanime.day"
+	url := allanime_base + provider_id
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", url, nil)
+	var videoData map[string]interface{}
+	if err != nil {
+		Log(fmt.Sprint("Error creating request:", err))
+		return videoData
+	}
 
-// Send the request
-resp, err := client.Do(req)
-if err != nil {
-Log(fmt.Sprint("Error sending request:", err))
-return videoData
-}
-defer resp.Body.Close()
+	// Add the headers
+	req.Header.Set("Referer", "https://youtu-chan.com")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")
 
-// Read the response body
-body, err := io.ReadAll(resp.Body)
-if err != nil {
-Log(fmt.Sprint("Error reading response:", err))
-return videoData
-}
+	// Send the request
+	resp, err := client.Do(req)
+	if err != nil {
+		Log(fmt.Sprint("Error sending request:", err))
+		return videoData
+	}
+	defer resp.Body.Close()
 
-// Parse the JSON response
-err = json.Unmarshal(body, &videoData)
-if err != nil {
-Log(fmt.Sprint("Error parsing JSON:", err))
-return videoData
-}
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		Log(fmt.Sprint("Error reading response:", err))
+		return videoData
+	}
 
-// Process the data as needed
-return videoData
+	// Parse the JSON response
+	err = json.Unmarshal(body, &videoData)
+	if err != nil {
+		Log(fmt.Sprint("Error parsing JSON:", err))
+		return videoData
+	}
+
+	// Process the data as needed
+	return videoData
 }
 
 // Get anime episode url respective to given config
@@ -265,39 +314,63 @@ func GetEpisodeURL(config CurdConfig, id string, epNo int) ([]string, error) {
 	Log(fmt.Sprintf("Fetching episode URL from: %s", persistedURL))
 
 	client := &http.Client{}
+	
+	// First attempt: GET request with persistedQuery
 	req, err := http.NewRequest("GET", persistedURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
-	req.Header.Set("Referer", "https://allmanga.to")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")
+	req.Header.Set("Referer", "https://youtu-chan.com")
+	req.Header.Set("Origin", "https://youtu-chan.com")
 
 	resp, err := client.Do(req)
-	if err != nil {
-		Log(fmt.Sprintf("Error making request: %v", err))
-		return nil, err
+	var body []byte
+	if err == nil {
+		defer resp.Body.Close()
+		body, _ = io.ReadAll(resp.Body)
+		Log(fmt.Sprintf("API Response Status (GET): %d, Body: %s", resp.StatusCode, string(body)))
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		Log(fmt.Sprintf("Error reading response body: %v", err))
-		return nil, err
-	}
-
-	Log(fmt.Sprintf("API Response Status: %d, Body: %s", resp.StatusCode, string(body)))
 
 	var response allanimeResponse
-	err = json.Unmarshal(body, &response)
-	if err != nil {
-		Log(fmt.Sprintf("Error parsing JSON: %v", err))
-		Log(fmt.Sprintf("Response body: %s", string(body)))
-		return nil, err
+	if len(body) > 0 {
+		json.Unmarshal(body, &response)
 	}
 
-	// Check for GraphQL errors
-	if len(response.Errors) > 0 {
+	// Fallback attempt: POST request with raw GraphQL query
+	if response.Data.Tobeparsed == "" {
+		Log("Tobeparsed not found in GET response, falling back to POST request")
+		
+		postPayload := map[string]interface{}{
+			"query":     `query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls }}`,
+			"variables": variables,
+		}
+		
+		postBody, _ := json.Marshal(postPayload)
+		req, err = http.NewRequest("POST", "https://api.allanime.day/api", strings.NewReader(string(postBody)))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")
+			req.Header.Set("Referer", "https://youtu-chan.com")
+			req.Header.Set("Origin", "https://youtu-chan.com")
+			
+			resp, err = client.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+				body, _ = io.ReadAll(resp.Body)
+				Log(fmt.Sprintf("API Response Status (POST): %d, Body: %s", resp.StatusCode, string(body)))
+				
+				response = allanimeResponse{}
+				json.Unmarshal(body, &response)
+			} else {
+				Log(fmt.Sprintf("Error making POST request: %v", err))
+			}
+		}
+	}
+
+	// Check for GraphQL errors only if we still don't have tobeparsed
+	if response.Data.Tobeparsed == "" && len(response.Errors) > 0 {
 		Log(fmt.Sprintf("GraphQL error in response: %v", response.Errors[0].Message))
 		return nil, fmt.Errorf("GraphQL error: %s", response.Errors[0].Message)
 	}

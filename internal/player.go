@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,16 +17,10 @@ var logFile = "debug.log"
 
 // getReferrerForURL returns the referrer needed for specific video hosts
 func getReferrerForURL(link string) string {
-	parsedURL, err := url.Parse(link)
-	if err != nil {
-		return ""
-	}
-
-	host := parsedURL.Host
 	
-	// fast4speed.rsvp requires Referer header from allmanga.to
-	if strings.Contains(host, "fast4speed.rsvp") {
-		return "https://allmanga.to"
+	// fast4speed.rsvp requires Referer header from youtu-chan.com
+	if strings.Contains(link, "fast4speed.rsvp") || strings.Contains(link, "youtu-chan.com") {
+		return "https://youtu-chan.com"
 	}
 	
 	return ""

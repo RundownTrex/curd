@@ -35,9 +35,8 @@ type episodesResponse struct {
 func EpisodesList(showID, mode string) ([]string, error) {
 	const (
 		agent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0"
-		allanimeRef  = "https://allmanga.to"
-		allanimeBase = "allanime.day"
-		allanimeAPI  = "https://api." + allanimeBase + "/api"
+		allanimeRef  = "https://youtu-chan.com"
+		allanimeAPI  = "https://api.allanime.day/api"
 	)
 
 	episodesListGql := `query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}`
