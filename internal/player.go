@@ -157,6 +157,9 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 		return "", fmt.Errorf("failed to start mpv: %w", err)
 	}
 
+	// Store the command for later use
+	anime.Ep.Player.SocketPath = mpvSocketPath
+	
 	// Wait for the socket to become available with retries
 	socketReady := false
 	maxRetries := 10
@@ -180,8 +183,14 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 
 	if !socketReady {
 		Log(fmt.Sprintf("Failed to connect to MPV socket after %d attempts", maxRetries))
-		// Don't fail here, just warn and continue - the next commands will handle any further issues
+			// Don't fail here, just warn and continue - the next commands will handle any further issues
 	}
+
+	// Start a goroutine to wait for mpv to exit
+	go func() {
+		command.Wait()
+		Log("MPV process exited")
+	}()
 
 	return mpvSocketPath, nil
 }

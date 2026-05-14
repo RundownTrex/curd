@@ -34,9 +34,10 @@ type allanimeResponse struct {
 }
 
 type result struct {
-index int
-links []string
-err   error
+	index    int
+	links    []string
+	provider string
+	err      error
 }
 
 func decodeTobeparsed(blob string) string {
@@ -87,7 +88,8 @@ func decodeTobeparsed(blob string) string {
 
 	Log(fmt.Sprintf("After replace: %s", result))
 
-	re := regexp.MustCompile(`"sourceUrl":"--([^"]+)"[^}]*?"sourceName":"([^"]+)"`)
+	// Try the newer format first (without "--" prefix)
+	re := regexp.MustCompile(`"sourceUrl":"([^"]*)"[^}]*?"sourceName":"([^"]+)"`)
 	matches := re.FindAllStringSubmatch(result, -1)
 
 	Log(fmt.Sprintf("Regex matches found: %d", len(matches)))
@@ -98,9 +100,14 @@ func decodeTobeparsed(blob string) string {
 	var sb strings.Builder
 	for _, match := range matches {
 		if len(match) == 3 {
+			sourceUrl := match[1]
+			// Handle both old format (with "--" prefix) and new format
+			if strings.HasPrefix(sourceUrl, "--") {
+				sourceUrl = sourceUrl[2:]
+			}
 			sb.WriteString(match[2])
 			sb.WriteString(" :")
-			sb.WriteString(match[1])
+			sb.WriteString(sourceUrl)
 			sb.WriteString("\n")
 		}
 	}
@@ -194,13 +201,55 @@ func extractMp4UploadLinks(pageURL string) map[string]interface{} {
 	}
 }
 
-func extractLinks(provider_id string) map[string]interface{} {
+func getProviderName(url string) string {
+	// Check for known providers
+	providerMap := map[string]string{
+		"repackager.wixmp.com":    "wixmp (m3u8)",
+		"wixmp.com":               "wixmp (m3u8)",
+		"fast4speed.rsvp":         "Youtube (mp4)",
+		"youtu-chan.com":          "Youtube (mp4)",
+		"sharepoint":              "Sharepoint (mp4)",
+		"mp4upload":               "Mp4Upload (mp4)",
+		"filemoon":                "Filemoon (HLS)",
+		"vidplay":                 "Vidplay (HLS)",
+		"gogocdn":                 "GogoAnime (m3u8)",
+		"dood":                    "Dood (mp4)",
+		"streamtape":              "StreamTape (mp4)",
+	}
+
+	for domain, providerName := range providerMap {
+		if strings.Contains(url, domain) {
+			return providerName
+		}
+	}
+
+	// Extract domain from URL for unknown providers
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		if parts := strings.Split(url, "://"); len(parts) > 1 {
+			if domainParts := strings.Split(parts[1], "/"); len(domainParts) > 0 {
+				return domainParts[0]
+			}
+		}
+	}
+
+	// For relative paths like "/clock/..."
+	if strings.HasPrefix(url, "/clock") {
+		return "Allanime (API)"
+	}
+
+	return "Unknown"
+}
+
+func extractLinks(provider_id string) (map[string]interface{}, string) {
 	// Check if provider_id is already a full URL (external link)
+	providerName := getProviderName(provider_id)
+	
 	if strings.HasPrefix(provider_id, "http://") || strings.HasPrefix(provider_id, "https://") {
 		// mp4upload: scrape the page for the actual video src
 		if strings.Contains(provider_id, "mp4upload") {
 			Log(fmt.Sprintf("mp4upload URL detected, scraping page: %s", provider_id))
-			return extractMp4UploadLinks(provider_id)
+			linksData := extractMp4UploadLinks(provider_id)
+			return linksData, "Mp4Upload (mp4)"
 		}
 
 		// It's an external direct video link, return it as-is
@@ -224,7 +273,7 @@ func extractLinks(provider_id string) map[string]interface{} {
 					"link": cleanedURL,
 				},
 			},
-		}
+		}, providerName
 	}
 
 	// It's a relative path for allanime API
@@ -235,7 +284,7 @@ func extractLinks(provider_id string) map[string]interface{} {
 	var videoData map[string]interface{}
 	if err != nil {
 		Log(fmt.Sprint("Error creating request:", err))
-		return videoData
+		return videoData, providerName
 	}
 
 	// Add the headers
@@ -246,26 +295,80 @@ func extractLinks(provider_id string) map[string]interface{} {
 	resp, err := client.Do(req)
 	if err != nil {
 		Log(fmt.Sprint("Error sending request:", err))
-		return videoData
+		return map[string]interface{}{"links": []interface{}{}}, providerName
 	}
 	defer resp.Body.Close()
+
+	// Check HTTP status code
+	if resp.StatusCode != 200 {
+		Log(fmt.Sprintf("HTTP error: %d for URL: %s", resp.StatusCode, url))
+		return map[string]interface{}{"links": []interface{}{}}, providerName
+	}
 
 	// Read the response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		Log(fmt.Sprint("Error reading response:", err))
-		return videoData
+		return map[string]interface{}{"links": []interface{}{}}, providerName
 	}
 
-	// Parse the JSON response
-	err = json.Unmarshal(body, &videoData)
-	if err != nil {
-		Log(fmt.Sprint("Error parsing JSON:", err))
-		return videoData
+	// Log the raw response for debugging
+	bodyStr := string(body)
+	Log(fmt.Sprintf("Raw API response length: %d", len(bodyStr)))
+	if len(bodyStr) < 3000 {
+		Log(fmt.Sprintf("Raw API response: %s", bodyStr))
+	} else {
+		Log(fmt.Sprintf("First 2000 chars: %s", bodyStr[:2000]))
 	}
 
-	// Process the data as needed
-	return videoData
+	// The /clock.json endpoint returns JSON with link and resolutionStr fields
+	// Format: [{"link":"https://...","resolutionStr":"720"},{"link":"https://...","resolutionStr":"480"}]
+	// We need to extract the "link" values
+	
+	var linksArray []interface{}
+	
+	// Try parsing as a JSON array first
+	var videoArray []interface{}
+	if err := json.Unmarshal(body, &videoArray); err == nil && len(videoArray) > 0 {
+		// Successfully parsed as array
+		Log(fmt.Sprintf("Parsed as JSON array with %d elements", len(videoArray)))
+		linksArray = videoArray
+	} else {
+		// Try parsing as a map with "data" or other root fields
+		var videoData map[string]interface{}
+		if err := json.Unmarshal(body, &videoData); err == nil {
+			Log("Parsed as JSON object")
+			
+			// Check for "data" field
+			if dataArray, ok := videoData["data"].([]interface{}); ok {
+				Log(fmt.Sprintf("Found 'data' array with %d elements", len(dataArray)))
+				linksArray = dataArray
+			} else if dataMap, ok := videoData["data"].(map[string]interface{}); ok {
+				Log("Found 'data' object")
+				// Check for nested links field
+				if links, ok := dataMap["links"].([]interface{}); ok {
+					linksArray = links
+				} else {
+					linksArray = []interface{}{dataMap}
+				}
+			} else {
+				// No standard structure found, try to use the whole map as a single link object
+				Log("No standard structure found, treating response as single object")
+				linksArray = []interface{}{videoData}
+			}
+		} else {
+			Log(fmt.Sprint("Error parsing JSON:", err))
+			// Return empty links on parse failure
+			return map[string]interface{}{"links": []interface{}{}}, providerName
+		}
+	}
+
+	Log(fmt.Sprintf("Total link objects to process: %d", len(linksArray)))
+	
+	// Return formatted response - the caller expects {"links": [...]}
+	return map[string]interface{}{
+		"links": linksArray,
+	}, providerName
 }
 
 // Get anime episode url respective to given config
@@ -389,7 +492,9 @@ func GetEpisodeURL(config CurdConfig, id string, epNo int) ([]string, error) {
 				continue
 			}
 			if parts := strings.Split(line, " :"); len(parts) == 2 {
-				url := "--" + parts[1]
+				url := parts[1]
+				// Convert /clock to /clock.json (as per ani-cli)
+				url = strings.ReplaceAll(url, "/clock", "/clock.json")
 				Log(fmt.Sprintf("Extracted URL: %s", url))
 				validURLs = append(validURLs, url)
 			}
@@ -405,36 +510,14 @@ func GetEpisodeURL(config CurdConfig, id string, epNo int) ([]string, error) {
 		}
 	}
 
-// Pre-count valid URLs and create slice to preserve order
+// For sourceUrls responses, collect all URLs and let extractLinks handle them
 validURLs := make([]string, 0)
-highestPriority := -1
-var highestPriorityURL string
 
-	for _, url := range response.Data.Episode.SourceUrls {
-		if len(url.SourceUrl) == 0 {
-			continue
-		}
-
-		if len(url.SourceUrl) > 2 && unicode.IsDigit(rune(url.SourceUrl[2])) {
-			decodedURL := decodeProviderID(url.SourceUrl[2:])
-			if strings.Contains(decodedURL, LinkPriorities[0]) {
-				priority := int(url.SourceUrl[2] - '0')
-				if priority > highestPriority {
-					highestPriority = priority
-					highestPriorityURL = url.SourceUrl
-				}
-			} else {
-				validURLs = append(validURLs, url.SourceUrl)
-			}
-		} else {
-			// Fallback: add URLs that don't match the expected encoded format
-			validURLs = append(validURLs, url.SourceUrl)
-		}
-	}
-
-// If we found a highest priority URL, use only that
-if highestPriorityURL != "" {
-validURLs = []string{highestPriorityURL}
+for _, url := range response.Data.Episode.SourceUrls {
+if len(url.SourceUrl) == 0 {
+	continue
+}
+validURLs = append(validURLs, url.SourceUrl)
 }
 
 if len(validURLs) == 0 {
@@ -445,162 +528,114 @@ return getLinksFromURLs(validURLs)
 }
 
 func getLinksFromURLs(validURLs []string) ([]string, error) {
-// Create channels for results and a slice to store ordered results
-results := make(chan result, len(validURLs))
-orderedResults := make([][]string, len(validURLs))
+	results := make(chan result, len(validURLs))
+	orderedResults := make([][]string, len(validURLs))
+	highPriorityLink := make(chan []string, 1)
 
-// Add a channel for high priority links
-highPriorityLink := make(chan []string, 1)
+	// Launch all goroutines immediately — no rate limiter
+	for i, sourceUrl := range validURLs {
+		go func(idx int, url string) {
+			var decodedProviderID string
+			if len(url) > 2 && unicode.IsDigit(rune(url[0])) {
+				rawPath := url[2:]
+				if strings.HasPrefix(rawPath, "/") || strings.HasPrefix(rawPath, "http") {
+					decodedProviderID = rawPath
+				} else {
+					decodedProviderID = decodeProviderID(rawPath)
+				}
+			} else {
+				decodedProviderID = url
+			}
 
-// Create rate limiter
-rateLimiter := time.NewTicker(50 * time.Millisecond)
-defer rateLimiter.Stop()
-// Launch goroutines
-remainingURLs := len(validURLs)
-for i, sourceUrl := range validURLs {
-go func(idx int, url string) {
-	<-rateLimiter.C // Rate limit the requests
+			extractedLinks, providerName := extractLinks(decodedProviderID)
 
-	// URLs from the tobeparsed path are already decoded (e.g. "/clock/id" or "https://...").
-	// Only call decodeProviderID for the old hex-encoded sourceUrls format.
-	rawPath := url[2:]
-	var decodedProviderID string
-	if strings.HasPrefix(rawPath, "/") || strings.HasPrefix(rawPath, "http") {
-		decodedProviderID = rawPath
-		Log(fmt.Sprintf("Processing URL %d/%d (already decoded): %s", idx+1, len(validURLs), decodedProviderID))
-	} else {
-		decodedProviderID = decodeProviderID(rawPath)
-		Log(fmt.Sprintf("Processing URL %d/%d with provider ID: %s", idx+1, len(validURLs), decodedProviderID))
+			if extractedLinks == nil {
+				results <- result{index: idx, err: fmt.Errorf("failed to extract links for provider %s", decodedProviderID)}
+				return
+			}
+
+			linksInterface, ok := extractedLinks["links"].([]interface{})
+			if !ok {
+				results <- result{index: idx, err: fmt.Errorf("links field is not []interface{} for provider %s", decodedProviderID)}
+				return
+			}
+
+			var links []string
+			for _, linkInterface := range linksInterface {
+				linkMap, ok := linkInterface.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				link, ok := linkMap["link"].(string)
+				if !ok {
+					continue
+				}
+				links = append(links, link)
+			}
+
+			// Send high-priority link immediately if found
+			for _, link := range links {
+				for _, domain := range LinkPriorities[:3] {
+					if strings.Contains(link, domain) {
+						select {
+						case highPriorityLink <- []string{link}:
+						default:
+						}
+						break
+					}
+				}
+			}
+
+			results <- result{index: idx, links: links, provider: providerName}
+		}(i, sourceUrl)
 	}
 
-extractedLinks := extractLinks(decodedProviderID)
+	// Wait up to 500ms for a high-priority link, then fall through to collect all
+	timeout := time.After(5 * time.Second)
+	select {
+	case links := <-highPriorityLink:
+		// Drain results in background so goroutines don't leak
+		go func() {
+			for i := 0; i < len(validURLs); i++ {
+				select {
+				case <-results:
+				case <-time.After(8 * time.Second):
+					return
+				}
+			}
+		}()
+		return links, nil
+	case <-time.After(500 * time.Millisecond):
+		// No high-priority link yet — fall through to collect all results
+	}
 
-if extractedLinks == nil {
-results <- result{
-index: idx,
-err:   fmt.Errorf("failed to extract links for provider %s", decodedProviderID),
-}
-return
-}
+	// Collect all results; timeout exits the loop early with whatever we have
+	var collectedErrors []error
+	processed := 0
+collect:
+	for processed < len(validURLs) {
+		select {
+		case res := <-results:
+			processed++
+			if res.err != nil {
+				Log(fmt.Sprintf("Error processing URL %d: %v", res.index+1, res.err))
+				collectedErrors = append(collectedErrors, res.err)
+			} else {
+				orderedResults[res.index] = res.links
+			}
+		case <-timeout:
+			Log(fmt.Sprintf("Timeout reached with %d/%d results", processed, len(validURLs)))
+			break collect
+		}
+	}
 
-linksInterface, ok := extractedLinks["links"].([]interface{})
-if !ok {
-results <- result{
-index: idx,
-err:   fmt.Errorf("links field is not []interface{} for provider %s", decodedProviderID),
-}
-return
-}
-
-var links []string
-for _, linkInterface := range linksInterface {
-linkMap, ok := linkInterface.(map[string]interface{})
-if !ok {
-Log(fmt.Sprintf("Warning: invalid link format for provider %s", decodedProviderID))
-continue
-}
-
-link, ok := linkMap["link"].(string)
-if !ok {
-Log(fmt.Sprintf("Warning: link field is not string for provider %s", decodedProviderID))
-continue
-}
-
-links = append(links, link)
-}
-
-// Check if any of the extracted links are high priority
-for _, link := range links {
-for _, domain := range LinkPriorities[:3] { // Check only top 3 priority domains
-if strings.Contains(link, domain) {
-// Found high priority link, send it immediately
-select {
-case highPriorityLink <- []string{link}:
-default:
-// Channel already has a high priority link
-}
-break
-}
-}
+	allLinks := flattenResults(orderedResults)
+	if len(allLinks) == 0 {
+		return nil, fmt.Errorf("no valid links found from %d URLs: %v", len(validURLs), collectedErrors)
+	}
+	return allLinks, nil
 }
 
-results <- result{
-index: idx,
-links: links,
-}
-}(i, sourceUrl)
-}
-
-// Collect results with timeout
-timeout := time.After(10 * time.Second)
-var collectedErrors []error
-successCount := 0
-
-// First, try to get a high priority link
-select {
-case links := <-highPriorityLink:
-// Continue extracting other links in background
-go collectRemainingResults(results, orderedResults, &successCount, &collectedErrors, remainingURLs)
-return links, nil
-case <-time.After(2 * time.Second): // Wait only briefly for high priority link
-// No high priority link found quickly, proceed with normal collection
-}
-
-// Continue with existing result collection logic
-// Collect results maintaining order
-for successCount < len(validURLs) {
-select {
-case res := <-results:
-if res.err != nil {
-Log(fmt.Sprintf("Error processing URL %d: %v", res.index+1, res.err))
-collectedErrors = append(collectedErrors, fmt.Errorf("URL %d: %w", res.index+1, res.err))
-} else {
-orderedResults[res.index] = res.links
-successCount++
-Log(fmt.Sprintf("Successfully processed URL %d/%d", res.index+1, len(validURLs)))
-}
-case <-timeout:
-if successCount > 0 {
-Log(fmt.Sprintf("Timeout reached with %d/%d successful results", successCount, len(validURLs)))
-// Flatten available results
-return flattenResults(orderedResults), nil
-}
-return nil, fmt.Errorf("timeout waiting for results after %d successful responses", successCount)
-}
-}
-
-// If we have any errors but also some successes, log errors but continue
-if len(collectedErrors) > 0 {
-Log(fmt.Sprintf("Completed with %d errors: %v", len(collectedErrors), collectedErrors))
-}
-
-// Flatten and return results
-allLinks := flattenResults(orderedResults)
-if len(allLinks) == 0 {
-return nil, fmt.Errorf("no valid links found from %d URLs: %v", len(validURLs), collectedErrors)
-}
-
-return allLinks, nil
-}
-
-// Helper function to collect remaining results in background
-func collectRemainingResults(results chan result, orderedResults [][]string, successCount *int, collectedErrors *[]error, remainingURLs int) {
-for *successCount < remainingURLs {
-select {
-case res := <-results:
-if res.err != nil {
-Log(fmt.Sprintf("Error processing URL %d: %v", res.index+1, res.err))
-*collectedErrors = append(*collectedErrors, fmt.Errorf("URL %d: %w", res.index+1, res.err))
-} else {
-orderedResults[res.index] = res.links
-*successCount++
-Log(fmt.Sprintf("Successfully processed URL %d/%d", res.index+1, remainingURLs))
-}
-case <-time.After(10 * time.Second):
-return
-}
-}
-}
 
 // converts the ordered slice of link slices into a single slice
 func flattenResults(results [][]string) []string {

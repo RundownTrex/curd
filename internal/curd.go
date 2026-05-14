@@ -1308,14 +1308,35 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 	} else {
 		CurdOut(fmt.Sprintf("%s - Episode %d", GetAnimeName(*anime), anime.Ep.Number))
 	}
-	mpvSocketPath, err := StartVideo(PrioritizeLink(anime.Ep.Links), []string{}, fmt.Sprintf("%s - Episode %d", GetAnimeName(*anime), anime.Ep.Number), anime)
 
-	if err != nil {
-		Log("Failed to start mpv")
-		os.Exit(1)
+	// Provider selection loop - allow re-selection if provider fails
+	for {
+		// Use interactive provider selection
+		selectedLink := SelectProviderInteractive(anime.Ep.Links)
+		
+		if selectedLink == "SKIP" {
+			CurdOut("Exiting episode selection")
+			os.Exit(0)
+		}
+		
+		if selectedLink == "RETRY" {
+			continue
+		}
+		
+		if selectedLink == "" {
+			CurdOut("No playable links available")
+			os.Exit(1)
+		}
+
+		mpvSocketPath, err := StartVideo(selectedLink, []string{}, fmt.Sprintf("%s - Episode %d", GetAnimeName(*anime), anime.Ep.Number), anime)
+
+		if err != nil {
+			Log("Failed to start mpv: " + err.Error())
+			continue
+		}
+
+		return mpvSocketPath
 	}
-
-	return mpvSocketPath
 }
 
 func CheckAndDownloadFiles(storagePath string, filesToCheck []string) error {
@@ -1429,6 +1450,11 @@ func NextEpisodePromptContinuous(userCurdConfig *CurdConfig, databaseFile string
 		if !anime.Ep.Started {
 			time.Sleep(1 * time.Second)
 			continue
+		}
+
+		// Check if MPV is still running
+		if !IsMPVRunning(anime.Ep.Player.SocketPath) {
+			return
 		}
 
 		// Show the next episode number that will be started
@@ -1697,4 +1723,97 @@ func HandleLastEpisodeCompletion(userCurdConfig *CurdConfig, anime *Anime, user 
 			}
 		}
 	}
+}
+
+// SelectProviderInteractive presents a menu to select which provider to use
+// Uses DynamicSelect for automatic rofi/fzf support
+func SelectProviderInteractive(links []string) string {
+	if len(links) == 0 {
+		return ""
+	}
+	if len(links) == 1 {
+		return links[0]
+	}
+
+	// Group links by provider
+	providerMap := make(map[string][]string)
+	providerOrder := []string{}
+	
+	for _, link := range links {
+		provider := GetProviderForLink(link)
+		if _, exists := providerMap[provider]; !exists {
+			providerOrder = append(providerOrder, provider)
+		}
+		providerMap[provider] = append(providerMap[provider], link)
+	}
+
+	// Build selection options for DynamicSelect
+	options := make([]SelectionOption, 0)
+	
+	// Add providers as options
+	for _, provider := range providerOrder {
+		qualityCount := len(providerMap[provider])
+		label := fmt.Sprintf("%s (%d qualities)", provider, qualityCount)
+		options = append(options, SelectionOption{
+			Label: label,
+			Key:   provider,
+		})
+	}
+
+	// Use DynamicSelect for selection (handles rofi/fzf automatically)
+	selectedOption, err := DynamicSelect(options)
+	
+	if err != nil {
+		Log("Error in provider selection: " + err.Error())
+		return "RETRY"
+	}
+
+	// Check for quit (Key "-1" is returned when user quits)
+	if selectedOption.Key == "-1" || selectedOption.Key == "" {
+		return "SKIP"
+	}
+
+	selectedProvider := selectedOption.Key
+	selectedLinks := providerMap[selectedProvider]
+	
+	if len(selectedLinks) == 0 {
+		return "RETRY"
+	}
+	
+	// Return first quality of selected provider
+	return selectedLinks[0]
+}
+
+
+// DisplayEpisodeLinks displays all fetched episode links in a user-friendly format
+func DisplayEpisodeLinks(links []string) {
+}
+
+func PromptTryAnotherProvider(userCurdConfig *CurdConfig) bool {
+	options := []SelectionOption{
+		{Key: "try_another", Label: "Try another provider"},
+		{Key: "quit", Label: "Quit"},
+	}
+
+	var selectedOptionKey string
+	ClearScreen()
+	if userCurdConfig.RofiSelection {
+		CurdOut("Episode ended or mpv was closed.\nWould you like to:")
+		sel, err := DynamicSelect(options)
+		if err == nil && sel.Key == "try_another" {
+			selectedOptionKey = "try_another"
+		} else {
+			selectedOptionKey = "quit"
+		}
+	} else {
+		CurdOut("\033[1;35mEpisode ended or mpv was closed\033[0m")
+		sel, err := DynamicSelect(options)
+		if err == nil && sel.Key == "try_another" {
+			selectedOptionKey = "try_another"
+		} else {
+			selectedOptionKey = "quit"
+		}
+	}
+
+	return selectedOptionKey == "try_another"
 }

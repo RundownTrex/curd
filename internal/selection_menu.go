@@ -62,7 +62,15 @@ var (
 
 	quitHintStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFD700")) // Gold
+
+	activeProgram *tea.Program
 )
+
+func QuitActiveSelectionMenu() {
+	if activeProgram != nil {
+		activeProgram.Quit()
+	}
+}
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
@@ -443,6 +451,8 @@ func DynamicSelectFromSlice(options []SelectionOption) (SelectionOption, error) 
 	model.filterOptions() // Initialize filtered options
 
 	p := tea.NewProgram(model)
+	activeProgram = p
+	defer func() { activeProgram = nil }()
 
 	finalModel, err := p.Run()
 	if err != nil {
@@ -496,6 +506,8 @@ func DynamicSelect(options []SelectionOption) (SelectionOption, error) {
 	model.filterOptions() // Initialize filtered options
 
 	p := tea.NewProgram(model)
+	activeProgram = p
+	defer func() { activeProgram = nil }()
 	finalModel, err := p.Run()
 	if err != nil {
 		return SelectionOption{}, err
@@ -540,6 +552,8 @@ func DynamicMultiSelect(options []SelectionOption) ([]SelectionOption, error) {
 	model.filterOptions() // Initialize filtered options
 
 	p := tea.NewProgram(model)
+	activeProgram = p
+	defer func() { activeProgram = nil }()
 	finalModel, err := p.Run()
 	if err != nil {
 		return nil, err
