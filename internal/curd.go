@@ -1311,8 +1311,15 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 
 	// Provider selection loop - allow re-selection if provider fails
 	for {
-		// Use interactive provider selection
-		selectedLink := SelectProviderInteractive(anime.Ep.Links)
+		var selectedLink string
+		if anime.Ep.AutoFallback && len(anime.Ep.Links) > 0 {
+			selectedLink = anime.Ep.Links[0]
+			CurdOut(fmt.Sprintf("Auto-switching to provider: %s", GetProviderForLink(selectedLink)))
+			anime.Ep.AutoFallback = false // Reset after use
+		} else {
+			// Use interactive provider selection
+			selectedLink = SelectProviderInteractive(anime.Ep.Links)
+		}
 		
 		if selectedLink == "SKIP" {
 			CurdOut("Exiting episode selection")

@@ -46,6 +46,8 @@ type Episode struct {
 	ContinueLast   bool
 	LastWasSkipped bool // used in filler check
 	IsCompleted    bool
+	AutoFallback   bool
+	StuckDetected  bool
 }
 
 type NextEpisode struct {
@@ -58,6 +60,7 @@ type playingVideo struct {
 	Speed        float64 `json:"speed"`
 	PlaybackTime int     `json:"playback_time"`
 	SocketPath   string
+	LastExitCode int
 }
 
 type User struct {

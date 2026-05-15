@@ -182,14 +182,28 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 	}
 
 	if !socketReady {
-		Log(fmt.Sprintf("Failed to connect to MPV socket after %d attempts", maxRetries))
-			// Don't fail here, just warn and continue - the next commands will handle any further issues
+		Log(fmt.Sprintf("Failed to connect to MPV socket after %d attempts. Terminating process.", maxRetries))
+		if command.Process != nil {
+			command.Process.Kill()
+		}
+		return "", fmt.Errorf("mpv failed to initialize IPC socket")
 	}
 
 	// Start a goroutine to wait for mpv to exit
 	go func() {
-		command.Wait()
-		Log("MPV process exited")
+		err := command.Wait()
+		if err != nil {
+			if exitError, ok := err.(*exec.ExitError); ok {
+				anime.Ep.Player.LastExitCode = exitError.ExitCode()
+				Log(fmt.Sprintf("MPV process exited with error code: %d", anime.Ep.Player.LastExitCode))
+			} else {
+				Log(fmt.Sprintf("MPV process exited with error: %v", err))
+				anime.Ep.Player.LastExitCode = -1
+			}
+		} else {
+			anime.Ep.Player.LastExitCode = 0
+			Log("MPV process exited successfully")
+		}
 	}()
 
 	return mpvSocketPath, nil

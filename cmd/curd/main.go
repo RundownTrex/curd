@@ -515,12 +515,17 @@ func main() {
 		// Playback monitoring goroutine
 		go func() {
 			defer wg.Done()
+			playbackStartTime := time.Now()
+			lastPos := -1.0
+			lastPosTime := time.Now()
+			stuckThreshold := 25 * time.Second // Increased to 25s for slow connections
+
 			for {
 				select {
 				case <-skipLoopDone:
 					return
 				default:
-					time.Sleep(500 * time.Millisecond)
+					time.Sleep(1000 * time.Millisecond) // Checked every second
 
 					timePos, err := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "time-pos"})
 					if err != nil {
@@ -576,7 +581,25 @@ func main() {
 							} else {
 								// ── Premature close ────────────────────────────────────────────────
 								internal.QuitActiveSelectionMenu()
-								if internal.PromptTryAnotherProvider(&userCurdConfig) {
+
+								// Automatic Provider Fallback:
+								// If MPV exited with an error OR played for less than 10 seconds in this session,
+								// OR if we manually killed it because it was stuck,
+								// and there are more links available, try the next one automatically.
+								sessionDuration := time.Since(playbackStartTime).Seconds()
+								if (anime.Ep.Player.LastExitCode != 0 || sessionDuration < 10 || anime.Ep.StuckDetected) && len(anime.Ep.Links) > 1 {
+									internal.Log(fmt.Sprintf("Automatic Fallback: MPV exited (code: %d, session time: %.1fs, stuck: %v). Trying next provider.",
+										anime.Ep.Player.LastExitCode, sessionDuration, anime.Ep.StuckDetected))
+									internal.CurdOut("Provider failed, stuck, or exited early. Switching to next available provider...")
+
+									// Remove the current link from the list
+									if len(anime.Ep.Links) > 0 {
+										anime.Ep.Links = anime.Ep.Links[1:]
+									}
+									anime.Ep.AutoFallback = true
+									anime.Ep.StuckDetected = false // Reset
+									retryProviderCh <- true
+								} else if internal.PromptTryAnotherProvider(&userCurdConfig) {
 									retryProviderCh <- true
 								} else {
 									internal.ExitCurd(nil)
@@ -591,27 +614,58 @@ func main() {
 
 					// timePos obtained — update playback state
 					if timePos != nil {
-						if !anime.Ep.Started {
-							anime.Ep.Started = true
-							if userCurdConfig.SaveMpvSpeed {
-								_, err2 := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"set_property", "speed", anime.Ep.Player.Speed})
-								if err2 != nil {
-									internal.Log("Error setting playback speed: " + err2.Error())
+						currentPos, ok := timePos.(float64)
+						if ok {
+							// Stuck detection logic
+							if currentPos != lastPos {
+								lastPos = currentPos
+								lastPosTime = time.Now()
+							} else {
+								// Position hasn't changed, check if we're paused
+								isPaused, pErr := internal.GetMPVPausedStatus(anime.Ep.Player.SocketPath)
+								if pErr == nil && !isPaused {
+									if time.Since(lastPosTime) > stuckThreshold {
+										internal.Log(fmt.Sprintf("Playback stuck at %.2f for %v. Killing MPV.", currentPos, stuckThreshold))
+										internal.CurdOut("Playback stuck. Switching to another provider...")
+										anime.Ep.StuckDetected = true
+										internal.ExitMPV(anime.Ep.Player.SocketPath)
+										continue
+									}
+								} else {
+									// If paused, reset the stuck timer
+									lastPosTime = time.Now()
 								}
 							}
-							if err2 := internal.SendSkipTimesToMPV(&anime); err2 != nil {
-								internal.Log("Error sending skip times to MPV: " + err2.Error())
+
+							if !anime.Ep.Started {
+								anime.Ep.Started = true
+								if userCurdConfig.SaveMpvSpeed {
+									_, err2 := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"set_property", "speed", anime.Ep.Player.Speed})
+									if err2 != nil {
+										internal.Log("Error setting playback speed: " + err2.Error())
+									}
+								}
+								if err2 := internal.SendSkipTimesToMPV(&anime); err2 != nil {
+									internal.Log("Error sending skip times to MPV: " + err2.Error())
+								}
 							}
-						}
 
-						if anime.Ep.Resume {
-							internal.SeekMPV(anime.Ep.Player.SocketPath, anime.Ep.Player.PlaybackTime)
-							anime.Ep.Resume = false
-						}
+							if anime.Ep.Resume {
+								internal.SeekMPV(anime.Ep.Player.SocketPath, anime.Ep.Player.PlaybackTime)
+								anime.Ep.Resume = false
+							}
 
-						if pos, ok := timePos.(float64); ok {
-							anime.Ep.Player.PlaybackTime = int(pos + 0.5)
+							anime.Ep.Player.PlaybackTime = int(currentPos + 0.5)
 							internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.AllanimeId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, internal.ConvertSecondsToMinutes(anime.Ep.Duration), internal.GetAnimeName(anime))
+						}
+					} else {
+						// timePos is nil (could be loading/buffering at the very start)
+						if time.Since(lastPosTime) > stuckThreshold {
+							internal.Log(fmt.Sprintf("MPV stuck loading (no time-pos) for %v. Killing MPV.", stuckThreshold))
+							internal.CurdOut("Provider stuck loading. Switching to another provider...")
+							anime.Ep.StuckDetected = true
+							internal.ExitMPV(anime.Ep.Player.SocketPath)
+							continue
 						}
 					}
 				}
