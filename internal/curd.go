@@ -964,15 +964,8 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 
 	// if anime found in database, use it
 	if animePointer != nil {
-		anime.AllanimeId = animePointer.AllanimeId
-
-		// Safety check: if the ID contains a colon it is in the old
-		// "provider:id" multi-provider format and is no longer valid.
-		// Clear it so the correct ID gets selected and saved below.
-		if strings.Contains(anime.AllanimeId, ":") {
-			Log(fmt.Sprintf("Legacy provider ID detected: %s. Clearing to force re-link.", anime.AllanimeId))
-			anime.AllanimeId = ""
-		}
+		anime.ProviderId = animePointer.ProviderId
+		anime.ProviderName = animePointer.ProviderName
 
 		anime.Ep.Player.PlaybackTime = animePointer.Ep.Player.PlaybackTime
 		if anime.Ep.Number == animePointer.Ep.Number {
@@ -980,52 +973,37 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		}
 	}
 
-	// If AllanimeId is missing (not in DB or cleared), search and select it
-	if anime.AllanimeId == "" {
-		Log("AllanimeId is missing, searching for anime...")
-		// Get Anime list (All anime)
-		Log(fmt.Sprintf("Searching for anime with query: %s, SubOrDub: %s", userQuery, userCurdConfig.SubOrDub))
-
-		animeList, err := SearchAnime(string(userQuery), userCurdConfig.SubOrDub)
+	// If ProviderId is missing, resolve provider mapping
+	if anime.ProviderId == "" {
+		Log("ProviderId is missing, resolving mapping...")
+		outcome, err := ResolveAnimeProviderMapping(userCurdConfig, anime, string(userQuery), selectedAnilistAnime)
 		if err != nil {
-			Log(fmt.Sprintf("Failed to search anime: %v", err))
-			ExitCurd(fmt.Errorf("Failed to search anime"))
+			ExitCurd(fmt.Errorf("Failed to resolve anime mapping: %v", err))
 		}
-		if len(animeList) == 0 {
-			ExitCurd(fmt.Errorf("No results found on provider."))
-		}
-
-		// Try to find exact match by title and episodes
-		targetLabel := fmt.Sprintf("%v (%d episodes)", userQuery, selectedAnilistAnime.Media.Episodes)
-		for i, option := range animeList {
-			Log(fmt.Sprintf("Checking option %d: Key='%s', Label='%s'", i, option.Key, option.Label))
-			if option.Label == targetLabel {
-				anime.AllanimeId = option.Key
-				Log(fmt.Sprintf("Found exact match! Setting AllanimeId to: %s", anime.AllanimeId))
-				break
-			}
+		if outcome != ProviderMappingOK {
+			ExitCurd(nil)
 		}
 
-		// If still no exact match, prompt manual selection
-		if anime.AllanimeId == "" {
-			CurdOut("Failed to automatically select anime")
-			var selectedAllanimeAnime SelectionOption
-			selectedAllanimeAnime, err = DynamicSelect(animeList)
-			if err != nil {
-				ExitCurd(fmt.Errorf("No anime available"))
-			}
-			if selectedAllanimeAnime.Key == "-1" {
-				ExitCurd(nil)
-			}
-			anime.AllanimeId = selectedAllanimeAnime.Key
-
-			// Save the anime selection to database immediately so we don't ask again
-			err = LocalUpdateAnime(databaseFile, anime.AnilistId, anime.AllanimeId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, anime.Ep.Duration, GetAnimeName(*anime))
-			if err != nil {
-				Log(fmt.Sprintf("Warning: Failed to save anime selection to database: %v", err))
-			}
+		// Save the anime selection to database immediately so we don't ask again
+		err = LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, anime.Ep.Duration, GetAnimeName(*anime), anime.ProviderName)
+		if err != nil {
+			Log(fmt.Sprintf("Warning: Failed to save anime selection to database: %v", err))
 		}
 	}
+	// Prompt user to select a provider for this session
+	selectedProvider := PromptProviderSelection()
+	if selectedProvider == "" {
+		ExitCurd(nil)
+		return
+	}
+	Log(fmt.Sprintf("User selected provider: %s (current: %s)", selectedProvider, anime.ProviderName))
+	CurdOut(fmt.Sprintf("\033[1;36mUser explicitly selected provider: %s\033[0m", selectedProvider))
+	if selectedProvider != anime.ProviderName {
+		anime.ProviderName = selectedProvider
+		anime.ProviderId = "" // Force re-search on the chosen provider
+		Log(fmt.Sprintf("Switched provider to %s, will search for anime on new provider", selectedProvider))
+	}
+	userCurdConfig.Provider = selectedProvider
 
 	// If anime is not in watching list, prompt user to add it into watching list
 	isInWatchingList := false
@@ -1122,7 +1100,7 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 			CurdOut(fmt.Sprintf("Failed to retrieve anime list: %v", err))
 		} else {
 			for _, option := range animeList {
-				if option.Key == anime.AllanimeId {
+				if option.Key == anime.ProviderId {
 					// Extract total episodes from the label
 					if matches := regexp.MustCompile(`\((\d+) episodes\)`).FindStringSubmatch(option.Label); len(matches) > 1 {
 						anime.TotalEpisodes, _ = strconv.Atoi(matches[1])
@@ -1196,7 +1174,7 @@ func WriteTokenToFile(token string, filePath string) error {
 func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 
 	// Validate inputs
-	if anime.AllanimeId == "" {
+	if anime.ProviderId == "" {
 		CurdOut("Error: No anime ID found")
 		os.Exit(1)
 	}
@@ -1205,17 +1183,19 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 		os.Exit(1)
 	}
 
-	if (anime.Ep.NextEpisode.Number == anime.Ep.Number) && (len(anime.Ep.NextEpisode.Links) > 0) {
+	if (anime.Ep.NextEpisode.Number == anime.Ep.Number) && (len(anime.Ep.NextEpisode.Links) > 0) &&
+		(anime.Ep.NextEpisode.ProviderName == anime.ProviderName && anime.Ep.NextEpisode.ProviderId == anime.ProviderId && anime.Ep.NextEpisode.Mode == userCurdConfig.SubOrDub) {
 		anime.Ep.Links = anime.Ep.NextEpisode.Links
 	} else {
 		// Get episode link
-		link, err := GetEpisodeURL(*userCurdConfig, anime.AllanimeId, anime.Ep.Number)
+		result, err := ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
+		link := result.Links
 		if len(link) > 0 {
 			Log(fmt.Sprintf("Links details: %+v", link))
 		}
 		if err != nil {
 			// If unable to get episode link automatically get manually
-			episodeList, err := EpisodesList(anime.AllanimeId, userCurdConfig.SubOrDub)
+			episodeList, err := EpisodesList(anime.ProviderId, userCurdConfig.SubOrDub)
 			if err != nil {
 				CurdOut("No episode list found")
 				RestoreScreen()
@@ -1232,7 +1212,8 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 				CurdOut(fmt.Sprintf("Enter the episode (%v episodes)", episodeList[len(episodeList)-1]))
 				fmt.Scanln(&anime.Ep.Number)
 			}
-			link, err = GetEpisodeURL(*userCurdConfig, anime.AllanimeId, anime.Ep.Number)
+			result, err = ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
+			link = result.Links
 			if err != nil {
 				CurdOut("Failed to get episode link")
 				os.Exit(1)
@@ -1259,13 +1240,16 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 			if userCurdConfig.SkipFiller && IsEpisodeFiller(anime.FillerEpisodes, anime.Ep.Number) {
 				nextEpNum = GetNextCanonEpisode(anime.FillerEpisodes, nextEpNum)
 			}
-			nextLinks, err := GetEpisodeURL(*userCurdConfig, anime.AllanimeId, nextEpNum)
+			nextResult, err := ResolveEpisodeURLForPlayback(*userCurdConfig, anime, nextEpNum)
 			if err != nil {
 				Log(fmt.Sprintf("Error getting next episode link for ep %d: %v", nextEpNum, err))
 			} else {
 				anime.Ep.NextEpisode = NextEpisode{
-					Number: nextEpNum,
-					Links:  nextLinks,
+					Number:       nextEpNum,
+					Links:        nextResult.Links,
+					ProviderName: nextResult.ProviderName,
+					ProviderId:   nextResult.ProviderID,
+					Mode:         nextResult.Mode,
 				}
 			}
 		} else {
@@ -1311,15 +1295,8 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 
 	// Provider selection loop - allow re-selection if provider fails
 	for {
-		var selectedLink string
-		if anime.Ep.AutoFallback && len(anime.Ep.Links) > 0 {
-			selectedLink = anime.Ep.Links[0]
-			CurdOut(fmt.Sprintf("Auto-switching to provider: %s", GetProviderForLink(selectedLink)))
-			anime.Ep.AutoFallback = false // Reset after use
-		} else {
-			// Use interactive provider selection
-			selectedLink = SelectProviderInteractive(anime.Ep.Links)
-		}
+		// Use interactive provider selection
+		selectedLink := SelectProviderInteractive(anime.Ep.Links)
 		
 		if selectedLink == "SKIP" {
 			CurdOut("Exiting episode selection")
@@ -1493,7 +1470,7 @@ func NextEpisodePromptContinuous(userCurdConfig *CurdConfig, databaseFile string
 				anime.Ep.IsCompleted = true
 
 				// Update local database
-				err = LocalUpdateAnime(databaseFile, anime.AnilistId, anime.AllanimeId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, ConvertSecondsToMinutes(anime.Ep.Duration), GetAnimeName(*anime))
+				err = LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, ConvertSecondsToMinutes(anime.Ep.Duration), GetAnimeName(*anime), anime.ProviderName)
 				if err != nil {
 					Log("Error updating local database on quit: " + err.Error())
 				}
@@ -1523,7 +1500,7 @@ func NextEpisodePromptContinuous(userCurdConfig *CurdConfig, databaseFile string
 			anime.Ep.IsCompleted = true
 
 			// Update database with completed episode first
-			err = LocalUpdateAnime(databaseFile, anime.AnilistId, anime.AllanimeId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, ConvertSecondsToMinutes(anime.Ep.Duration), GetAnimeName(*anime))
+			err = LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, ConvertSecondsToMinutes(anime.Ep.Duration), GetAnimeName(*anime), anime.ProviderName)
 			if err != nil {
 				Log("Error updating local database with completed episode: " + err.Error())
 			}
@@ -1553,7 +1530,7 @@ func NextEpisodePromptContinuous(userCurdConfig *CurdConfig, databaseFile string
 				Log(fmt.Sprintf("No prefetched links available for episode %d, will fetch new ones", anime.Ep.Number))
 			}
 
-			err = LocalUpdateAnime(databaseFile, anime.AnilistId, anime.AllanimeId, anime.Ep.Number, 0, 0, GetAnimeName(*anime))
+			err = LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, 0, 0, GetAnimeName(*anime), anime.ProviderName)
 			if err != nil {
 				Log("Error updating local database with next episode: " + err.Error())
 			}
@@ -1662,7 +1639,7 @@ func StartNextEpisode(anime *Anime, userCurdConfig *CurdConfig, databaseFile str
 	Log("Completed episode, starting next.")
 
 	// Update local database
-	err := LocalUpdateAnime(databaseFile, anime.AnilistId, anime.AllanimeId, anime.Ep.Number, 0, 0, GetAnimeName(*anime))
+	err := LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, 0, 0, GetAnimeName(*anime), anime.ProviderName)
 	if err != nil {
 		Log("Error updating local database: " + err.Error())
 	}
@@ -1742,53 +1719,9 @@ func SelectProviderInteractive(links []string) string {
 		return links[0]
 	}
 
-	// Group links by provider
-	providerMap := make(map[string][]string)
-	providerOrder := []string{}
-	
-	for _, link := range links {
-		provider := GetProviderForLink(link)
-		if _, exists := providerMap[provider]; !exists {
-			providerOrder = append(providerOrder, provider)
-		}
-		providerMap[provider] = append(providerMap[provider], link)
-	}
-
-	// Build selection options for DynamicSelect
-	options := make([]SelectionOption, 0)
-	
-	// Add providers as options
-	for _, provider := range providerOrder {
-		qualityCount := len(providerMap[provider])
-		label := fmt.Sprintf("%s (%d qualities)", provider, qualityCount)
-		options = append(options, SelectionOption{
-			Label: label,
-			Key:   provider,
-		})
-	}
-
-	// Use DynamicSelect for selection (handles rofi/fzf automatically)
-	selectedOption, err := DynamicSelect(options)
-	
-	if err != nil {
-		Log("Error in provider selection: " + err.Error())
-		return "RETRY"
-	}
-
-	// Check for quit (Key "-1" is returned when user quits)
-	if selectedOption.Key == "-1" || selectedOption.Key == "" {
-		return "SKIP"
-	}
-
-	selectedProvider := selectedOption.Key
-	selectedLinks := providerMap[selectedProvider]
-	
-	if len(selectedLinks) == 0 {
-		return "RETRY"
-	}
-	
-	// Return first quality of selected provider
-	return selectedLinks[0]
+	// Just use the first link for now, since provider system handles quality selection differently
+	// We'll trust the provider system to return the prioritized links
+	return links[0]
 }
 
 
@@ -1799,28 +1732,17 @@ func DisplayEpisodeLinks(links []string) {
 func PromptTryAnotherProvider(userCurdConfig *CurdConfig) bool {
 	options := []SelectionOption{
 		{Key: "try_another", Label: "Try another provider"},
-		{Key: "quit", Label: "Quit"},
 	}
 
-	var selectedOptionKey string
 	ClearScreen()
 	if userCurdConfig.RofiSelection {
 		CurdOut("Episode ended or mpv was closed.\nWould you like to:")
-		sel, err := DynamicSelect(options)
-		if err == nil && sel.Key == "try_another" {
-			selectedOptionKey = "try_another"
-		} else {
-			selectedOptionKey = "quit"
-		}
 	} else {
 		CurdOut("\033[1;35mEpisode ended or mpv was closed\033[0m")
-		sel, err := DynamicSelect(options)
-		if err == nil && sel.Key == "try_another" {
-			selectedOptionKey = "try_another"
-		} else {
-			selectedOptionKey = "quit"
-		}
 	}
-
-	return selectedOptionKey == "try_another"
+	sel, err := DynamicSelect(options)
+	if err == nil && sel.Key == "try_another" {
+		return true
+	}
+	return false
 }

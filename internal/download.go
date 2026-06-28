@@ -599,43 +599,25 @@ func DownloadAnimeMenu(config *CurdConfig, user *User, databaseAnimes *[]Anime) 
 	currentEp := animeEntry.Progress + 1
 	anime.Ep.Number = currentEp
 
-	// Find AllanimeId from database or search
+	// Find ProviderId from database or search
 	animePointer := LocalFindAnime(*databaseAnimes, anime.AnilistId, "")
 	if animePointer != nil {
-		anime.AllanimeId = animePointer.AllanimeId
+		anime.ProviderId = animePointer.ProviderId
+		anime.ProviderName = animePointer.ProviderName
 	} else {
-		// Search for anime
+		// Search for anime and resolve mapping
 		userQuery := anime.Title.Romaji
-		animeList, err := SearchAnime(string(userQuery), config.SubOrDub)
+		if userQuery == "" {
+			userQuery = anime.Title.English
+		}
+		
+		outcome, err := ResolveAnimeProviderMapping(config, anime, userQuery, animeEntry)
 		if err != nil {
-			CurdOut(fmt.Sprintf("Error searching anime: %v", err))
+			CurdOut(fmt.Sprintf("Error mapping anime: %v", err))
 			return
 		}
-
-		if len(animeList) == 0 {
-			CurdOut("No results found for this anime")
+		if outcome != ProviderMappingOK {
 			return
-		}
-
-		// Try to auto-match
-		targetLabel := fmt.Sprintf("%v (%d episodes)", userQuery, anime.TotalEpisodes)
-		found := false
-		for _, option := range animeList {
-			if option.Label == targetLabel {
-				anime.AllanimeId = option.Key
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			// Manual selection
-			CurdOut("Could not auto-match anime, please select manually:")
-			selectedAllanime, err := DynamicSelect(animeList)
-			if err != nil || selectedAllanime.Key == "-1" {
-				return
-			}
-			anime.AllanimeId = selectedAllanime.Key
 		}
 	}
 
@@ -719,12 +701,13 @@ func downloadEpisodeSelection(anime *Anime, config *CurdConfig) {
 		anime.Ep.Number = epNum
 
 		// Get episode links
-		links, err := GetEpisodeURL(*config, anime.AllanimeId, epNum)
+		result, err := ResolveEpisodeURLForPlayback(*config, anime, epNum)
 		if err != nil {
 			CurdOut(fmt.Sprintf("Error getting episode links for Episode %d: %v", epNum, err))
 			failCount++
 			continue
 		}
+		links := result.Links
 
 		if len(links) == 0 {
 			CurdOut(fmt.Sprintf("No download links available for Episode %d", epNum))

@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/wraient/curd/internal"
+	_ "github.com/wraient/curd/internal/loadproviders"
 )
 
 var version string // Will be set by ldflags during build
@@ -38,6 +38,7 @@ func main() {
 		return
 	}
 	internal.SetGlobalConfig(&userCurdConfig)
+	internal.GlobalConfigPath = configFilePath
 
 	logFile := filepath.Join(os.ExpandEnv(userCurdConfig.StoragePath), "debug.log")
 	internal.SetGlobalLogFile(logFile)
@@ -156,10 +157,7 @@ func main() {
 	}
 
 	// Determine which tracking service to use
-	trackingService := strings.ToLower(userCurdConfig.TrackingService)
-	if trackingService == "" {
-		trackingService = "mal" // Default to MAL
-	}
+	trackingService := internal.GetTrackingService(&userCurdConfig)
 
 	// Get the appropriate token based on tracking service (for displaying anime list)
 	if trackingService == "mal" || trackingService == "myanimelist" {
@@ -303,28 +301,37 @@ func main() {
 		// retryProviderCh: true = retry provider for same episode, false = normal completion
 		retryProviderCh := make(chan bool, 1)
 
+		if retryProvider {
+			// Re-prompt provider selection and clear old links
+			selectedProvider := internal.PromptProviderSelection()
+			if selectedProvider == "" {
+				internal.ExitCurd(nil)
+				return
+			}
+			internal.Log(fmt.Sprintf("Retry: user selected provider: %s (current: %s)", selectedProvider, anime.ProviderName))
+			internal.CurdOut(fmt.Sprintf("\033[1;36mUser explicitly selected provider: %s\033[0m", selectedProvider))
+			if selectedProvider != anime.ProviderName {
+				anime.ProviderName = selectedProvider
+				anime.ProviderId = "" // Force re-search on the chosen provider
+				anime.Ep.NextEpisode = internal.NextEpisode{} // Clear any prefetched episode from the old provider
+			}
+			userCurdConfig.Provider = selectedProvider
+			anime.Ep.Links = nil // Clear old links so they are re-fetched
+			
+			// Set to false so that the link-fetching block below executes
+			retryProvider = false
+		}
+
 		if !retryProvider {
 			// Get MalId and CoverImage (only if discord presence is enabled)
 			if userCurdConfig.DiscordPresence {
-				discordAvailable := true
-				err := internal.LoginClient(userCurdConfig.DiscordClientId)
+				anime.MalId, anime.CoverImage, err = internal.GetAnimeIDAndImage(anime.AnilistId)
 				if err != nil {
-					internal.Log("Discord connection failed, disabling presence: " + err.Error())
-					discordAvailable = false
-					userCurdConfig.DiscordPresence = false
+					internal.Log("Error getting anime ID and image: " + err.Error())
 				}
-
-				if discordAvailable {
-					anime.MalId, anime.CoverImage, err = internal.GetAnimeIDAndImage(anime.AnilistId)
-					if err != nil {
-						internal.Log("Error getting anime ID and image: " + err.Error())
-					}
-					err = internal.DiscordPresence(anime, false)
-					if err != nil {
-						internal.Log("Discord presence error, disabling: " + err.Error())
-						userCurdConfig.DiscordPresence = false
-					}
-				}
+				// Skip initial Discord presence - wait for MPV to provide real duration
+				// This avoids showing the default 25-minute duration before the video starts
+				internal.Log("Waiting for MPV to start to get actual video duration before showing Discord presence")
 			} else if anime.MalId == 0 {
 				anime.MalId, err = internal.GetAnimeMalID(anime.AnilistId)
 				if err != nil {
@@ -359,7 +366,7 @@ func main() {
 
 				anime.Ep.LastWasSkipped = true
 				anime.Ep.Started = false
-				internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.AllanimeId, anime.Ep.Number, 0, 0, internal.GetAnimeName(anime))
+				internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, 0, 0, internal.GetAnimeName(anime), anime.ProviderName)
 
 				if !anime.Rewatching {
 					go internal.UpdateAnimeProgressDual(user.AnilistToken, user.MalToken, anime.AnilistId, anime.MalId, anime.Ep.Number-1, &userCurdConfig)
@@ -375,7 +382,7 @@ func main() {
 			if len(anime.Ep.Links) == 0 {
 				// Wait up to 5s for prefetched links
 				for i := 0; i < 5; i++ {
-					if anime.Ep.NextEpisode.Number == anime.Ep.Number && len(anime.Ep.NextEpisode.Links) > 0 {
+					if anime.Ep.NextEpisode.Number == anime.Ep.Number && len(anime.Ep.NextEpisode.Links) > 0 && anime.Ep.NextEpisode.ProviderName == anime.ProviderName {
 						internal.Log("Using prefetched next episode link")
 						anime.Ep.Links = anime.Ep.NextEpisode.Links
 						break
@@ -384,14 +391,14 @@ func main() {
 				}
 
 				if len(anime.Ep.Links) == 0 {
-					links, err := internal.GetEpisodeURL(userCurdConfig, anime.AllanimeId, anime.Ep.Number)
+					result, err := internal.ResolveEpisodeURLForPlayback(userCurdConfig, &anime, anime.Ep.Number)
 					if err != nil {
 						internal.Log("Failed to get episode links: " + err.Error())
 						internal.CurdOut("Failed to get episode links. Try again later.")
 						internal.ExitCurd(fmt.Errorf("failed to get episode links: %v", err))
 						return
 					}
-					anime.Ep.Links = links
+					anime.Ep.Links = result.Links
 				}
 
 				if len(anime.Ep.Links) == 0 {
@@ -456,26 +463,113 @@ func main() {
 		}()
 
 		wg.Add(1)
-		// Discord presence goroutine
+		// Thread to update Discord presence with simple position-gap seek detection
 		go func() {
 			defer wg.Done()
 			if userCurdConfig.DiscordPresence {
+				var lastKnownPauseState bool = false
+				var lastKnownPosition int = 0
+				var lastStateCheck time.Time
+				var discordPresenceInitialized bool = false // Track if Discord presence has been set with real duration
+
 				for {
 					select {
 					case <-skipLoopDone:
 						return
 					default:
+						// Get current state from MPV
 						isPaused, err := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "pause"})
 						if err != nil {
 							internal.Log("Error getting pause status: " + err.Error())
+							time.Sleep(5 * time.Second)
+							continue
 						}
+
 						if isPaused == nil {
 							isPaused = true
-						} else {
-							isPaused = isPaused.(bool)
 						}
-						internal.DiscordPresence(anime, isPaused.(bool))
-						time.Sleep(1 * time.Second)
+
+						// Get current time position
+						currentPos := 0
+						timePos, err := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "time-pos"})
+						if err == nil && timePos != nil {
+							if pos, ok := timePos.(float64); ok {
+								currentPos = int(pos + 0.5) // Round to nearest integer
+							}
+						}
+
+						currentPauseState, ok := isPaused.(bool)
+						if !ok {
+							internal.Log(fmt.Sprintf("Error: pause state is not a bool (%T)", isPaused))
+							currentPauseState = true
+						}
+
+						// Simple seek detection: position gap > 5 seconds
+						hasSeekEvent := false
+						if lastKnownPosition > 0 {
+							positionDiff := currentPos - lastKnownPosition
+							if positionDiff < -5 || positionDiff > 7 { // 5 sec backward or 7 sec forward (allowing normal playback + buffer)
+								hasSeekEvent = true
+							}
+						}
+
+						hasPlayPauseEvent := currentPauseState != lastKnownPauseState
+
+						// Determine if we should update Discord presence
+						shouldUpdate := false
+
+						// Force update every 30 seconds for Discord keep-alive
+						if lastStateCheck.IsZero() || time.Since(lastStateCheck) >= 30*time.Second {
+							shouldUpdate = true
+						}
+
+						// Update on pause state change
+						if hasPlayPauseEvent {
+							shouldUpdate = true
+						}
+
+						// Update on seek events
+						if hasSeekEvent {
+							shouldUpdate = true
+						}
+
+						if shouldUpdate {
+							// Only update Discord if we have real duration OR if presence was already initialized
+							totalDuration := anime.Ep.Duration
+							if totalDuration == 0 {
+								// Skip Discord updates until we have real duration from MPV
+								if !discordPresenceInitialized {
+									lastKnownPauseState = currentPauseState
+									lastKnownPosition = currentPos
+									lastStateCheck = time.Now()
+									time.Sleep(2 * time.Second)
+									continue
+								}
+								totalDuration = currentPos + 1 // Small duration to avoid divide by zero
+							} else {
+								discordPresenceInitialized = true // Mark as initialized once we have real duration
+							}
+
+							// Force update on seek events to bypass Discord's internal filtering
+							var presenceErr error
+							if hasSeekEvent {
+								presenceErr = internal.DiscordPresenceWithForce(anime, currentPauseState, currentPos, totalDuration, userCurdConfig.DiscordClientId, true)
+							} else {
+								presenceErr = internal.DiscordPresence(anime, currentPauseState, currentPos, totalDuration, userCurdConfig.DiscordClientId)
+							}
+
+							if presenceErr != nil {
+								internal.Log("Error setting Discord presence: " + presenceErr.Error())
+							}
+
+							lastKnownPauseState = currentPauseState
+							lastStateCheck = time.Now()
+						}
+
+						// Always update position for next comparison
+						lastKnownPosition = currentPos
+
+						time.Sleep(2 * time.Second) // Check every 2 seconds
 					}
 				}
 			}
@@ -490,18 +584,44 @@ func main() {
 			internal.Log(anime.Ep.SkipTimes)
 		}()
 
-		// Video duration goroutine
+		// Get video duration
 		go func() {
 			for {
 				if anime.Ep.Started {
 					if anime.Ep.Duration == 0 {
+						// Get video duration
 						durationPos, err := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "duration"})
 						if err != nil {
 							internal.Log("Error getting video duration: " + err.Error())
 						} else if durationPos != nil {
 							if duration, ok := durationPos.(float64); ok {
-								anime.Ep.Duration = int(duration + 0.5)
+								anime.Ep.Duration = int(duration + 0.5) // Round to nearest integer
 								internal.Log(fmt.Sprintf("Video duration: %d seconds", anime.Ep.Duration))
+
+								// Initialize Discord presence with correct duration (first time with real duration)
+								if userCurdConfig.DiscordPresence {
+									isPaused, _ := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "pause"})
+									currentPos := 0
+									if timePos, err := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "time-pos"}); err == nil && timePos != nil {
+										if pos, ok := timePos.(float64); ok {
+											currentPos = int(pos + 0.5)
+										}
+									}
+									pauseState := false
+									if isPaused != nil {
+										if value, ok := isPaused.(bool); ok {
+											pauseState = value
+										} else {
+											internal.Log(fmt.Sprintf("Error: pause state is not a bool (%T)", isPaused))
+										}
+									}
+									internal.Log("Initializing Discord presence with real video duration")
+									if presenceErr := internal.DiscordPresence(anime, pauseState, currentPos, anime.Ep.Duration, userCurdConfig.DiscordClientId); presenceErr != nil {
+										internal.Log("Discord presence error: " + presenceErr.Error())
+									}
+								}
+							} else {
+								internal.Log("Error: duration is not a float64")
 							}
 						}
 						break
@@ -515,10 +635,6 @@ func main() {
 		// Playback monitoring goroutine
 		go func() {
 			defer wg.Done()
-			playbackStartTime := time.Now()
-			lastPos := -1.0
-			lastPosTime := time.Now()
-			stuckThreshold := 25 * time.Second // Increased to 25s for slow connections
 
 			for {
 				select {
@@ -541,7 +657,7 @@ func main() {
 								anime.Ep.IsCompleted = true
 
 								// Update local DB
-								internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.AllanimeId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, internal.ConvertSecondsToMinutes(anime.Ep.Duration), internal.GetAnimeName(anime))
+								internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, internal.ConvertSecondsToMinutes(anime.Ep.Duration), internal.GetAnimeName(anime), anime.ProviderName)
 
 								// Update remote progress BEFORE prompting
 								if !anime.Rewatching {
@@ -582,24 +698,7 @@ func main() {
 								// ── Premature close ────────────────────────────────────────────────
 								internal.QuitActiveSelectionMenu()
 
-								// Automatic Provider Fallback:
-								// If MPV exited with an error OR played for less than 10 seconds in this session,
-								// OR if we manually killed it because it was stuck,
-								// and there are more links available, try the next one automatically.
-								sessionDuration := time.Since(playbackStartTime).Seconds()
-								if (anime.Ep.Player.LastExitCode != 0 || sessionDuration < 10 || anime.Ep.StuckDetected) && len(anime.Ep.Links) > 1 {
-									internal.Log(fmt.Sprintf("Automatic Fallback: MPV exited (code: %d, session time: %.1fs, stuck: %v). Trying next provider.",
-										anime.Ep.Player.LastExitCode, sessionDuration, anime.Ep.StuckDetected))
-									internal.CurdOut("Provider failed, stuck, or exited early. Switching to next available provider...")
-
-									// Remove the current link from the list
-									if len(anime.Ep.Links) > 0 {
-										anime.Ep.Links = anime.Ep.Links[1:]
-									}
-									anime.Ep.AutoFallback = true
-									anime.Ep.StuckDetected = false // Reset
-									retryProviderCh <- true
-								} else if internal.PromptTryAnotherProvider(&userCurdConfig) {
+								if internal.PromptTryAnotherProvider(&userCurdConfig) {
 									retryProviderCh <- true
 								} else {
 									internal.ExitCurd(nil)
@@ -616,26 +715,7 @@ func main() {
 					if timePos != nil {
 						currentPos, ok := timePos.(float64)
 						if ok {
-							// Stuck detection logic
-							if currentPos != lastPos {
-								lastPos = currentPos
-								lastPosTime = time.Now()
-							} else {
-								// Position hasn't changed, check if we're paused
-								isPaused, pErr := internal.GetMPVPausedStatus(anime.Ep.Player.SocketPath)
-								if pErr == nil && !isPaused {
-									if time.Since(lastPosTime) > stuckThreshold {
-										internal.Log(fmt.Sprintf("Playback stuck at %.2f for %v. Killing MPV.", currentPos, stuckThreshold))
-										internal.CurdOut("Playback stuck. Switching to another provider...")
-										anime.Ep.StuckDetected = true
-										internal.ExitMPV(anime.Ep.Player.SocketPath)
-										continue
-									}
-								} else {
-									// If paused, reset the stuck timer
-									lastPosTime = time.Now()
-								}
-							}
+
 
 							if !anime.Ep.Started {
 								anime.Ep.Started = true
@@ -656,16 +736,7 @@ func main() {
 							}
 
 							anime.Ep.Player.PlaybackTime = int(currentPos + 0.5)
-							internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.AllanimeId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, internal.ConvertSecondsToMinutes(anime.Ep.Duration), internal.GetAnimeName(anime))
-						}
-					} else {
-						// timePos is nil (could be loading/buffering at the very start)
-						if time.Since(lastPosTime) > stuckThreshold {
-							internal.Log(fmt.Sprintf("MPV stuck loading (no time-pos) for %v. Killing MPV.", stuckThreshold))
-							internal.CurdOut("Provider stuck loading. Switching to another provider...")
-							anime.Ep.StuckDetected = true
-							internal.ExitMPV(anime.Ep.Player.SocketPath)
-							continue
+							internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, internal.ConvertSecondsToMinutes(anime.Ep.Duration), internal.GetAnimeName(anime), anime.ProviderName)
 						}
 					}
 				}
@@ -752,7 +823,7 @@ func main() {
 						internal.Log("Error rating anime: " + err.Error())
 						internal.CurdOut("Error rating anime: " + err.Error())
 					}
-					internal.LocalDeleteAnime(databaseFile, anime.AnilistId, anime.AllanimeId)
+					internal.LocalDeleteAnime(databaseFile, anime.AnilistId, anime.ProviderId)
 					internal.ExitCurd(nil)
 				}
 			}
@@ -761,7 +832,7 @@ func main() {
 		if anime.Rewatching && anime.Ep.IsCompleted && anime.Ep.Number-1 == anime.TotalEpisodes {
 			anime.Ep.Number = anime.Ep.Number - 1
 			internal.CurdOut("Completed anime. (Rewatching so no scoring)")
-			internal.LocalDeleteAnime(databaseFile, anime.AnilistId, anime.AllanimeId)
+			internal.LocalDeleteAnime(databaseFile, anime.AnilistId, anime.ProviderId)
 			internal.ExitCurd(nil)
 		}
 

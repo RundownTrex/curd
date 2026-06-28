@@ -1,5 +1,7 @@
 package internal
 
+import "time"
+
 type AnimeTitle struct {
 	Romaji   string `json:"title_romanji"`
 	English  string `json:"title"`
@@ -14,9 +16,20 @@ type Anime struct {
 	MalId          int        `json:"mal_id"`
 	AnilistId      int        `json:"anilist_id"` // Assuming you have an Anilist ID in your struct
 	Rewatching     bool
-	AllanimeId     string // Can be populated as necessary
+	Repeat         int
+	StartedAt      FuzzyDate
+	CompletedAt    FuzzyDate
+	ProviderId     string // Can be populated as necessary
+	ProviderName   string // newly added for history migration
 	FillerEpisodes []int
 	IsAiring       bool
+	SkipRemoteSync bool `json:"-"`
+}
+
+type FuzzyDate struct {
+	Year  int `json:"year"`
+	Month int `json:"month"`
+	Day   int `json:"day"`
 }
 
 type Skip struct {
@@ -38,6 +51,8 @@ type Episode struct {
 	Started        bool         `json:"started"`
 	Duration       int          `json:"duration"`
 	Links          []string     `json:"links"`
+	StreamReferrer string       `json:"-"`
+	SubtitleURL    string       `json:"-"`
 	NextEpisode    NextEpisode  `json:"next_episode"`
 	IsFiller       bool         `json:"filler"`
 	IsRecap        bool         `json:"recap"`
@@ -46,13 +61,20 @@ type Episode struct {
 	ContinueLast   bool
 	LastWasSkipped bool // used in filler check
 	IsCompleted    bool
-	AutoFallback   bool
-	StuckDetected  bool
 }
 
 type NextEpisode struct {
-	Number int
-	Links  []string
+	Number       int
+	Links        []string
+	ProviderName string
+	ProviderId   string
+	Mode         string
+}
+
+// StreamPlaybackHint carries MPV playback metadata for a resolved stream URL.
+type StreamPlaybackHint struct {
+	Referrer string
+	Subtitle string
 }
 
 type playingVideo struct {
@@ -72,10 +94,21 @@ type User struct {
 	AnimeList    AnimeList
 }
 
+var globalUser *User
+
+func SetGlobalUser(user *User) {
+	globalUser = user
+}
+
+func GetGlobalUser() *User {
+	return globalUser
+}
+
 // AniListAnime is the struct for the API response
 type AniListAnime struct {
-	ID    int `json:"id"`
-	Title struct {
+	ID       int `json:"id"`
+	Episodes int `json:"episodes"`
+	Title    struct {
 		Romaji  string `json:"romaji"`
 		English string `json:"english"`
 		Native  string `json:"native"`
@@ -98,16 +131,24 @@ type ResponseData struct {
 type Media struct {
 	Duration int        `json:"duration"`
 	Episodes int        `json:"episodes"`
+	Format   string     `json:"format"`
 	ID       int        `json:"id"`
+	MalID    int        `json:"mal_id"`
 	Title    AnimeTitle `json:"title"`
+	Status   string     `json:"status"`
 }
 
 type Entry struct {
-	Media      Media   `json:"media"`
-	Progress   int     `json:"progress"`
-	Score      float64 `json:"score"`
-	Status     string  `json:"status"`
-	CoverImage string  `json:"coverImage"`
+	ListID      int       `json:"id"`
+	Media       Media     `json:"media"`
+	Progress    int       `json:"progress"`
+	Repeat      int       `json:"repeat"`
+	Score       float64   `json:"score"`
+	Status      string    `json:"status"`
+	StartedAt   FuzzyDate `json:"startedAt"`
+	CompletedAt FuzzyDate `json:"completedAt"`
+	CoverImage  string    `json:"coverImage"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 type AnimeList struct {
@@ -132,6 +173,9 @@ type SelectionOptionImage struct {
 
 // SelectionOption holds the label and the internal key
 type SelectionOption struct {
-	Label string
-	Key   string
+	Title     string
+	Label     string
+	Key       string
+	Thumbnail string
+	ExtraData interface{}
 }

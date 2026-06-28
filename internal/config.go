@@ -63,6 +63,10 @@ type CurdConfig struct {
 	AlternateScreen          bool     `config:"AlternateScreen"`
 	DiscordPresence          bool     `config:"DiscordPresence"`
 	DiscordClientId          string   `config:"DiscordClientId"`
+	Provider                 string   `config:"Provider"`
+	DisabledProviders        string   `config:"DisabledProviders"`
+	ManualProviderSearch     bool     `config:"ManualProviderSearch"`
+	SubStyle                 string   `config:"SubStyle"`
 }
 
 // Default configuration values as a map
@@ -92,10 +96,15 @@ func defaultConfigMap() map[string]string {
 		"AlternateScreen":          "true",
 		"DiscordPresence":          "true",
 		"DiscordClientId":          "1287457464148820089",
+		"Provider":                 "[\"anineko\"]",
+		"DisabledProviders":        "[]",
+		"ManualProviderSearch":     "false",
+		"SubStyle":                 "ask",
 	}
 }
 
 var globalConfig *CurdConfig
+var GlobalConfigPath string
 
 func SetGlobalConfig(config *CurdConfig) {
 	globalConfig = config
@@ -173,6 +182,16 @@ func LoadConfig(configPath string) (CurdConfig, error) {
 	// Parse string arrays
 	if mpvArgs, exists := configMap["MpvArgs"]; exists {
 		configMap["MpvArgs"] = mpvArgs
+	}
+
+	if providerValue, exists := configMap["Provider"]; exists {
+		normalizedProviderValue := canonicalProviderConfigValue(providerValue)
+		if normalizedProviderValue != providerValue {
+			configMap["Provider"] = normalizedProviderValue
+			if addMissing {
+				_ = SaveConfigToFile(configPath, configMap)
+			}
+		}
 	}
 
 	// Populate the CurdConfig struct from the config map
@@ -585,12 +604,12 @@ func getOrderedCategories(userCurdConfig *CurdConfig) []SelectionOption {
 	// Define the default categories and their labels
 	defaultOrder := []string{"CURRENT", "ALL", "UNTRACKED", "UPDATE", "DOWNLOAD", "CONTINUE_LAST"}
 	defaultLabels := map[string]string{
-		"CURRENT":       "Currently Watching",
-		"ALL":           "Show All",
-		"UNTRACKED":     "Untracked Watching",
-		"UPDATE":        "Update (Episode, Status, Score)",
-		"DOWNLOAD":      "Download Episodes",
-		"CONTINUE_LAST": "Continue Last Session",
+		"CURRENT":        "Currently Watching",
+		"ALL":            "Show All",
+		"UNTRACKED":      "Untracked Watching",
+		"UPDATE":         "Update (Episode, Status, Score)",
+		"DOWNLOAD":       "Download Episodes",
+		"CONTINUE_LAST":  "Continue Last Session",
 	}
 
 	// Create ordered list to store final result
