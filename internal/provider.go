@@ -58,7 +58,7 @@ func parseProviderConfigParts(rawProvider string) []string {
 func parseProviderConfig(rawProvider string) ([]string, bool) {
 	rawProvider = strings.TrimSpace(rawProvider)
 	if rawProvider == "" {
-		rawProvider = firstEnabledProviderName()
+		return defaultEnabledProviderStack(), false
 	}
 
 	normalizedRaw := strings.ToLower(rawProvider)
@@ -108,7 +108,7 @@ func parseProviderConfig(rawProvider string) ([]string, bool) {
 }
 
 func configuredProviderNames(config *CurdConfig) []string {
-	rawProvider := firstEnabledProviderName()
+	rawProvider := stackedProviderConfigValue
 	if config != nil && strings.TrimSpace(config.Provider) != "" {
 		rawProvider = config.Provider
 	}
@@ -122,7 +122,15 @@ func ConfiguredProviderNames(config *CurdConfig) []string {
 }
 
 func canonicalProviderConfigValue(rawProvider string) string {
+	rawProvider = strings.TrimSpace(rawProvider)
+	if isStackedProviderConfig(rawProvider) {
+		return stackedProviderConfigValue
+	}
+
 	names, animepaheDeclined := parseProviderConfig(rawProvider)
+	if !animepaheDeclined && providerListsEqual(names, defaultEnabledProviderStack()) {
+		return stackedProviderConfigValue
+	}
 	return formatProviderConfigValue(names, animepaheDeclined)
 }
 
@@ -187,9 +195,7 @@ func ProviderStackContains(config *CurdConfig, providerName string) bool {
 
 func ProviderByName(providerName string) (Provider, error) {
 	providerName = normalizeProviderName(providerName)
-	// Only refuse to instantiate if the user explicitly blacklisted it.
-	// Ignore DefaultDisabled here so manually selected providers still work.
-	if reason := configDisabledProviderReason(providerName); reason != "" {
+	if reason := providerDisabledReason(providerName); reason != "" {
 		return nil, fmt.Errorf("provider %q is disabled: %s", providerName, reason)
 	}
 	provider, err := providers.New(providerName)
@@ -311,24 +317,48 @@ func providerIDForAnime(anime *Anime) (providerName, providerID string) {
 
 func providerNamesForAnime(config *CurdConfig, anime *Anime) []string {
 	configuredNames := configuredProviderNames(config)
-	providerName, _ := providerIDForAnime(anime)
+	providerName, rawID := providerIDForAnime(anime)
 	providerName = normalizeProviderName(providerName)
+
+	if providerName != "" && rawID != "" && ProviderEnabled(providerName) {
+		// If the user manually mapped this anime to a specific provider ID,
+		// ONLY return that provider. Do NOT fallback to other providers,
+		// because other providers will search using the AniList title, which
+		// might resolve to a completely different anime (e.g. a previous season)
+		// and silently play the wrong episodes if the requested episode number
+		// is out of bounds for the mapped provider but valid for the fallback provider.
+		return []string{providerName}
+	}
 
 	result := make([]string, 0, len(configuredNames)+1)
 	seen := make(map[string]struct{})
-
-	// Put the explicit provider first (unless explicitly blacklisted)
-	if providerName != "" && configDisabledProviderReason(providerName) == "" {
-		result = append(result, providerName)
-		seen[providerName] = struct{}{}
-	}
-
 	for _, name := range configuredNames {
 		if _, exists := seen[name]; exists {
 			continue
 		}
 		seen[name] = struct{}{}
 		result = append(result, name)
+	}
+	if providerName == "animepahe" && !ProviderStackContains(config, "animepahe") {
+		providerName = ""
+	}
+	if providerName != "" && !ProviderEnabled(providerName) {
+		providerName = ""
+	}
+	if providerName != "" {
+		if _, exists := seen[providerName]; !exists {
+			result = append(result, providerName)
+		} else {
+			// Move the providerName to the front of the list
+			var newResult []string
+			newResult = append(newResult, providerName)
+			for _, name := range result {
+				if name != providerName {
+					newResult = append(newResult, name)
+				}
+			}
+			result = newResult
+		}
 	}
 	if len(result) == 0 {
 		return []string{firstEnabledProviderName()}
@@ -379,11 +409,19 @@ func SearchAnime(query, mode string) ([]SelectionOption, error) {
 
 func searchAnimeWithProviders(providerNames []string, query, mode string) ([]SelectionOption, error) {
 	if len(providerNames) == 1 {
-		provider, err := ProviderByName(providerNames[0])
+		providerName := providerNames[0]
+		provider, err := ProviderByName(providerName)
 		if err != nil {
 			return nil, err
 		}
-		return provider.SearchAnime(query, mode)
+		options, err := provider.SearchAnime(query, mode)
+		if err != nil {
+			return nil, err
+		}
+		for i := range options {
+			options[i] = qualifySelectionOption(providerName, options[i], true)
+		}
+		return options, nil
 	}
 
 	results := make([]SelectionOption, 0)

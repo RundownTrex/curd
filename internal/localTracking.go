@@ -316,7 +316,7 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 			query = strings.TrimSpace(input)
 		}
 
-		providerID, providerName, back, searchErr := ResolveUntrackedProviderSearch(userCurdConfig, query)
+		providerID, providerName, selectedTitle, back, searchErr := ResolveUntrackedProviderSearch(userCurdConfig, query)
 		if searchErr != nil {
 			Log(fmt.Sprintf("Failed to search anime: %v", searchErr))
 			ExitCurd(fmt.Errorf("Failed to search anime"))
@@ -330,8 +330,16 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 
 		anime.ProviderId = providerID
 		anime.ProviderName = providerName
-		anime.Title.English = query
-		anime.Title.Romaji = query
+		
+		// If the user selected an option, use its title instead of their raw query
+		// so that fallback searches look for the exact anime they picked
+		if selectedTitle != "" {
+			anime.Title.English = selectedTitle
+			anime.Title.Romaji = selectedTitle
+		} else {
+			anime.Title.English = query
+			anime.Title.Romaji = query
+		}
 		break
 	}
 

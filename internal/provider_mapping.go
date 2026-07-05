@@ -613,7 +613,7 @@ func promptEpisodeLinkFailureRecovery(config *CurdConfig) string {
 	return selected.Key
 }
 
-func ResolveUntrackedProviderSearch(config *CurdConfig, initialQuery string) (providerID, providerName string, back bool, err error) {
+func ResolveUntrackedProviderSearch(config *CurdConfig, initialQuery string) (providerID, providerName, selectedTitle string, back bool, err error) {
 	state := &providerMappingSearchState{
 		query:        initialQuery,
 		allProviders: configuredProviderNames(config),
@@ -625,20 +625,20 @@ func ResolveUntrackedProviderSearch(config *CurdConfig, initialQuery string) (pr
 			Log(fmt.Sprintf("Provider search failed: %v", searchErr))
 			action, actionErr := promptProviderSearchRecovery(config, state, fmt.Sprintf("Provider search failed for '%s': %v", state.query, searchErr))
 			if actionErr != nil {
-				return "", "", false, actionErr
+				return "", "", "", false, actionErr
 			}
 			if action == "back" {
-				return "", "", true, nil
+				return "", "", "", true, nil
 			}
 			if action == "quit" {
-				return "", "", false, nil
+				return "", "", "", false, nil
 			}
 			_, cont, handleErr := handleProviderMappingAction(config, state, action, initialQuery)
 			if handleErr != nil {
-				return "", "", false, handleErr
+				return "", "", "", false, handleErr
 			}
 			if !cont {
-				return "", "", false, nil
+				return "", "", "", false, nil
 			}
 			continue
 		}
@@ -646,20 +646,20 @@ func ResolveUntrackedProviderSearch(config *CurdConfig, initialQuery string) (pr
 		if len(animeList) == 0 {
 			action, actionErr := promptProviderSearchRecovery(config, state, "")
 			if actionErr != nil {
-				return "", "", false, actionErr
+				return "", "", "", false, actionErr
 			}
 			if action == "back" {
-				return "", "", true, nil
+				return "", "", "", true, nil
 			}
 			if action == "quit" {
-				return "", "", false, nil
+				return "", "", "", false, nil
 			}
 			_, cont, handleErr := handleProviderMappingAction(config, state, action, initialQuery)
 			if handleErr != nil {
-				return "", "", false, handleErr
+				return "", "", "", false, handleErr
 			}
 			if !cont {
-				return "", "", false, nil
+				return "", "", "", false, nil
 			}
 			continue
 		}
@@ -669,20 +669,20 @@ func ResolveUntrackedProviderSearch(config *CurdConfig, initialQuery string) (pr
 			Log(fmt.Sprintf("Failed to select anime: %v", selectErr))
 			action, actionErr := promptProviderMatchRecovery(config, state)
 			if actionErr != nil {
-				return "", "", false, actionErr
+				return "", "", "", false, actionErr
 			}
 			if action == "back" {
-				return "", "", true, nil
+				return "", "", "", true, nil
 			}
 			if action == "quit" {
-				return "", "", false, nil
+				return "", "", "", false, nil
 			}
 			_, cont, handleErr := handleProviderMappingAction(config, state, action, initialQuery)
 			if handleErr != nil {
-				return "", "", false, handleErr
+				return "", "", "", false, handleErr
 			}
 			if !cont {
-				return "", "", false, nil
+				return "", "", "", false, nil
 			}
 			continue
 		}
@@ -691,29 +691,35 @@ func ResolveUntrackedProviderSearch(config *CurdConfig, initialQuery string) (pr
 		case "-1":
 			action, actionErr := promptProviderMatchRecovery(config, state)
 			if actionErr != nil {
-				return "", "", false, actionErr
+				return "", "", "", false, actionErr
 			}
 			if action == "back" {
-				return "", "", true, nil
+				return "", "", "", true, nil
 			}
 			if action == "quit" {
-				return "", "", false, nil
+				return "", "", "", false, nil
 			}
 			_, cont, handleErr := handleProviderMappingAction(config, state, action, initialQuery)
 			if handleErr != nil {
-				return "", "", false, handleErr
+				return "", "", "", false, handleErr
 			}
 			if !cont {
-				return "", "", false, nil
+				return "", "", "", false, nil
 			}
 			continue
 		case "-2":
-			return "", "", true, nil
+			return "", "", "", true, nil
 		default:
-			if name, rawID, ok := ParseProviderQualifiedID(selected.Key); ok {
-				return rawID, name, false, nil
+			
+			// Clean up the label to get the pure title if it has metadata like "[provider]" or " — TV"
+			cleanTitle := selected.Label
+			if idx := strings.Index(cleanTitle, " — "); idx != -1 {
+				cleanTitle = cleanTitle[:idx]
 			}
-			return selected.Key, configuredProviderNames(config)[0], false, nil
+			if name, rawID, ok := ParseProviderQualifiedID(selected.Key); ok {
+				return rawID, name, cleanTitle, false, nil
+			}
+			return selected.Key, configuredProviderNames(config)[0], cleanTitle, false, nil
 		}
 	}
 }

@@ -24,6 +24,12 @@ github.com/charmbracelet/x/ansi/parser
 # github.com/charmbracelet/x/term v0.2.1
 ## explicit; go 1.18
 github.com/charmbracelet/x/term
+# github.com/dlclark/regexp2 v1.11.4
+## explicit; go 1.13
+# github.com/dlclark/regexp2/v2 v2.2.1
+## explicit; go 1.25
+# github.com/dop251/goja v0.0.0-20251201205617-2bb4c724c0f9
+## explicit; go 1.20
 # github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f
 ## explicit; go 1.16
 github.com/erikgeiser/coninput
@@ -46,12 +52,16 @@ github.com/go-rod/rod/lib/utils
 # github.com/go-rod/stealth v0.4.9
 ## explicit; go 1.15
 github.com/go-rod/stealth
+# github.com/go-sourcemap/sourcemap v2.1.3+incompatible
+## explicit
 # github.com/go-toast/toast v0.0.0-20190211030409-01e6764cf0a4
 ## explicit
 github.com/go-toast/toast
 # github.com/godbus/dbus/v5 v5.1.0
 ## explicit; go 1.12
 github.com/godbus/dbus/v5
+# github.com/google/pprof v0.0.0-20230207041349-798e818bf904
+## explicit; go 1.19
 # github.com/lucasb-eyer/go-colorful v1.2.0
 ## explicit; go 1.12
 github.com/lucasb-eyer/go-colorful

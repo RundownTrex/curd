@@ -1,22 +1,15 @@
 # Curd Fork
 
-This is a fork of [Curd by Wraient](https://github.com/Wraient/curd) - A CLI application to stream anime with Anilist/MyAnimeList integration and Discord RPC.
+This repository is a fork of [Wraient/curd](https://github.com/Wraient/curd), a CLI app for anime playback with AniList/MyAnimeList tracking and Discord Rich Presence.
 
-## Changes Made in This Fork
+## What's New in This Fork
 
-### Discord Rich Presence Fix
-- **Fixed Discord RPC to display "Watching [Anime Name]"** instead of "Watching Curd"
-  - Modified `internal/discord.go` to use the `Name` field in the Activity struct
-  - Activity Type remains as 3 (Watching) for proper Discord status
-  - Now correctly shows the actual anime being watched (e.g., "Watching One Piece")
+1. **Discord Rich Presence fix**
+   - Presence now shows `Watching <Anime Name>` instead of a static app name.
+2. **Dual tracking support**
+   - AniList and MyAnimeList can both be updated automatically.
 
-### Dual Tracking Integration
-- **Added MAL and AniList dual tracking support**
-  - Both MyAnimeList and AniList get updated simultaneously after watching episodes
-  - No need to choose between services - track on both platforms at once
-  - Automatic progress synchronization across both tracking services
-
-## Building from Source
+## Build From Source
 
 ```bash
 git clone https://github.com/RundownTrex/curd.git
@@ -24,13 +17,16 @@ cd curd
 go build -o curd ./cmd/curd
 ```
 
-## Original Repository
+## AI-Assisted Development Notice
 
-For full documentation, installation instructions, and usage details, please visit the original repository:
+These changes were developed in this forked repository (`RundownTrex/curd`) with AI-assisted coding support.
+
+## Original Project
+
+For full upstream docs and usage details, see:
 - [Wraient/curd](https://github.com/Wraient/curd)
 
 ## Credits
 
-- [Wraient](https://github.com/Wraient) - Original author of Curd
-- All contributors to the original Curd project
-
+- [Wraient](https://github.com/Wraient) for the original project
+- Contributors to the upstream Curd project

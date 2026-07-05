@@ -1172,6 +1172,12 @@ func WriteTokenToFile(token string, filePath string) error {
 }
 
 func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
+	if err := resolveRuntimeProviderID(userCurdConfig, anime); err != nil {
+		Log(fmt.Sprintf("Failed to resolve provider id: %v", err))
+		CurdOut("Failed to resolve anime provider id: " + err.Error())
+		RestoreScreen()
+		os.Exit(1)
+	}
 
 	// Validate inputs
 	if anime.ProviderId == "" {
@@ -1183,50 +1189,102 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 		os.Exit(1)
 	}
 
-	if (anime.Ep.NextEpisode.Number == anime.Ep.Number) && (len(anime.Ep.NextEpisode.Links) > 0) &&
-		(anime.Ep.NextEpisode.ProviderName == anime.ProviderName && anime.Ep.NextEpisode.ProviderId == anime.ProviderId && anime.Ep.NextEpisode.Mode == userCurdConfig.SubOrDub) {
+	if (anime.Ep.NextEpisode.Number == anime.Ep.Number) && (len(anime.Ep.NextEpisode.Links) > 0) {
 		anime.Ep.Links = anime.Ep.NextEpisode.Links
+		anime.Ep.StreamReferrer = ""
+		anime.Ep.SubtitleURL = ""
+		if anime.Ep.NextEpisode.ProviderName != "" {
+			anime.ProviderName = anime.Ep.NextEpisode.ProviderName
+			anime.ProviderId = anime.Ep.NextEpisode.ProviderId
+		}
 	} else {
 		// Get episode link
-		result, err := ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
-		link := result.Links
+		episodeResult, err := ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
+		link := episodeResult.Links
 		if len(link) > 0 {
-			Log(fmt.Sprintf("Links details: %+v", link))
+			Log(fmt.Sprintf("Links details from %s/%s: %+v", episodeResult.ProviderName, episodeResult.Mode, link))
 		}
 		if err != nil {
-			// If unable to get episode link automatically get manually
-			episodeList, err := EpisodesList(anime.ProviderId, userCurdConfig.SubOrDub)
-			if err != nil {
-				CurdOut("No episode list found")
-				RestoreScreen()
-				os.Exit(1)
-			}
-			if userCurdConfig.RofiSelection {
-				userInput, err := GetUserInputFromRofi(fmt.Sprintf("Enter the episode (%v episodes)", episodeList[len(episodeList)-1]))
-				if err != nil {
-					Log("Error getting user input: " + err.Error())
-					ExitCurd(fmt.Errorf("Error getting user input: " + err.Error()))
+			linkErr := err
+			Log(fmt.Sprintf("ResolveEpisodeURL failed: %v", linkErr))
+			if reselectProviderAnime(userCurdConfig, anime, linkErr) {
+				episodeResult, err = ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
+				link = episodeResult.Links
+				if err == nil {
+					Log(fmt.Sprintf("Successfully retrieved %s/%s episode link after provider reselect. Links count: %d", episodeResult.ProviderName, episodeResult.Mode, len(link)))
+					anime.Ep.Links = link
+					applyStreamPlaybackHints(anime, anime.Ep.Links, episodeResult.LinkHints)
+					goto episodeLinksReady
 				}
-				anime.Ep.Number, err = strconv.Atoi(userInput)
-			} else {
-				CurdOut(fmt.Sprintf("Enter the episode (%v episodes)", episodeList[len(episodeList)-1]))
-				fmt.Scanln(&anime.Ep.Number)
+				linkErr = err
+				Log(fmt.Sprintf("ResolveEpisodeURL still failed after provider reselect: %v", linkErr))
 			}
-			result, err = ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
-			link = result.Links
-			if err != nil {
-				CurdOut("Failed to get episode link")
-				os.Exit(1)
+			for {
+				switch promptEpisodeLinkFailureRecovery(userCurdConfig) {
+				case "remap":
+					if RemapAnimeProviderOnEpisodeFailure(userCurdConfig, anime, nil) {
+						episodeResult, err = ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
+						link = episodeResult.Links
+						if err == nil && len(link) > 0 {
+							anime.Ep.Links = link
+							applyStreamPlaybackHints(anime, anime.Ep.Links, episodeResult.LinkHints)
+							goto episodeLinksReady
+						}
+						if err != nil {
+							linkErr = err
+							Log(fmt.Sprintf("ResolveEpisodeURL failed after provider remap: %v", linkErr))
+						}
+					}
+				case "episode":
+					episodeProviderName, episodeProviderID := AnimeProviderID(anime)
+					episodeList, listErr := EpisodesList(QualifyProviderID(episodeProviderName, episodeProviderID), userCurdConfig.SubOrDub)
+					if listErr != nil {
+						CurdOut("No episode list found: " + listErr.Error())
+						Log(fmt.Sprintf("EpisodesList failed: %v", listErr))
+						continue
+					}
+					if len(episodeList) == 0 {
+						CurdOut("No episodes were returned by the current provider for this anime.")
+						Log(fmt.Sprintf("EpisodesList returned no episodes for provider %s and id %s after ResolveEpisodeURL error: %v", episodeProviderName, episodeProviderID, linkErr))
+						continue
+					}
+					episodeNumber, promptErr := promptPositiveEpisodeNumber(userCurdConfig, fmt.Sprintf("Enter the episode (%v episodes)", episodeList[len(episodeList)-1]))
+					if promptErr != nil {
+						Log("Invalid episode input: " + promptErr.Error())
+						CurdOut("Invalid episode number")
+						continue
+					}
+					anime.Ep.Number = episodeNumber
+					episodeResult, err = ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
+					link = episodeResult.Links
+					if err == nil && len(link) > 0 {
+						anime.Ep.Links = link
+						applyStreamPlaybackHints(anime, anime.Ep.Links, episodeResult.LinkHints)
+						goto episodeLinksReady
+					}
+					if err != nil {
+						linkErr = err
+						Log(fmt.Sprintf("ResolveEpisodeURL failed for episode %d: %v", anime.Ep.Number, linkErr))
+					} else {
+						CurdOut("Failed to get episode link")
+					}
+				default:
+					RestoreScreen()
+					return ""
+				}
 			}
 		} else {
-			Log(fmt.Sprintf("Successfully retrieved episode link on first try. Links count: %d", len(link)))
+			Log(fmt.Sprintf("Successfully retrieved %s/%s episode link on first try. Links count: %d", episodeResult.ProviderName, episodeResult.Mode, len(link)))
 		}
 		anime.Ep.Links = link
+		applyStreamPlaybackHints(anime, anime.Ep.Links, episodeResult.LinkHints)
 	}
 
+episodeLinksReady:
 	if len(anime.Ep.Links) == 0 {
 		CurdOut("No episode links found")
-		os.Exit(1)
+		RestoreScreen()
+		return ""
 	} else {
 		Log(fmt.Sprintf("Episode links validation passed. Found %d links", len(anime.Ep.Links)))
 	}
@@ -1292,35 +1350,106 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 	} else {
 		CurdOut(fmt.Sprintf("%s - Episode %d", GetAnimeName(*anime), anime.Ep.Number))
 	}
+	mpvSocketPath, err := StartVideo(PrioritizeLink(anime.Ep.Links), []string{}, fmt.Sprintf("%s - Episode %d", GetAnimeName(*anime), anime.Ep.Number), anime)
 
-	// Provider selection loop - allow re-selection if provider fails
-	for {
-		// Use interactive provider selection
-		selectedLink := SelectProviderInteractive(anime.Ep.Links)
-		
-		if selectedLink == "SKIP" {
-			CurdOut("Exiting episode selection")
-			os.Exit(0)
-		}
-		
-		if selectedLink == "RETRY" {
-			continue
-		}
-		
-		if selectedLink == "" {
-			CurdOut("No playable links available")
-			os.Exit(1)
-		}
-
-		mpvSocketPath, err := StartVideo(selectedLink, []string{}, fmt.Sprintf("%s - Episode %d", GetAnimeName(*anime), anime.Ep.Number), anime)
-
-		if err != nil {
-			Log("Failed to start mpv: " + err.Error())
-			continue
-		}
-
-		return mpvSocketPath
+	if err != nil {
+		Log("Failed to start mpv")
+		RestoreScreen()
+		os.Exit(1)
 	}
+
+	return mpvSocketPath
+}
+
+func resolveRuntimeProviderID(userCurdConfig *CurdConfig, anime *Anime) error {
+	if anime == nil || anime.ProviderId == "" {
+		return nil
+	}
+
+	providerName, providerID := AnimeProviderID(anime)
+	if providerName != "animepahe" || !ProviderEnabled("animepahe") {
+		return nil
+	}
+	if !ProviderStackContains(userCurdConfig, "animepahe") {
+		return nil
+	}
+
+	provider, err := ProviderByName(providerName)
+	if err != nil {
+		return err
+	}
+
+	query := GetAnimeName(*anime)
+	if query == "" {
+		query = anime.Title.Romaji
+	}
+	if query == "" {
+		query = anime.Title.English
+	}
+
+	resolved, err := resolveProviderID(provider, providerID, query)
+	if err != nil {
+		return err
+	}
+	if resolved != "" && resolved != providerID {
+		Log(fmt.Sprintf("Resolved Animepahe provider id %s to runtime id %s", providerID, resolved))
+		anime.ProviderId = resolved
+		anime.ProviderName = providerName
+	}
+
+	return nil
+}
+
+func reselectProviderAnime(userCurdConfig *CurdConfig, anime *Anime, reason error) bool {
+	providerName, _ := AnimeProviderID(anime)
+	if providerName != "animepahe" || !ProviderEnabled("animepahe") {
+		return false
+	}
+
+	if reason != nil {
+		Log(fmt.Sprintf("Attempting Animepahe provider reselect after error: %v", reason))
+	}
+
+	query := GetAnimeName(*anime)
+	if query == "" {
+		query = anime.Title.Romaji
+	}
+	if query == "" {
+		query = anime.Title.English
+	}
+	if query == "" {
+		return false
+	}
+
+	options, err := SearchAnime(query, userCurdConfig.SubOrDub)
+	if err != nil {
+		Log(fmt.Sprintf("Animepahe provider reselect search failed for %q: %v", query, err))
+		return false
+	}
+	if len(options) == 0 {
+		Log(fmt.Sprintf("Animepahe provider reselect found no results for %q", query))
+		return false
+	}
+
+	CurdOut("The saved Animepahe mapping is stale. Please select the anime again.")
+	selected, err := DynamicSelect(options)
+	if err != nil || selected.Key == "-1" || selected.Key == "-2" || selected.Key == "" {
+		if err != nil {
+			Log(fmt.Sprintf("Animepahe provider reselect failed: %v", err))
+		}
+		return false
+	}
+
+	if selectedProviderName, rawProviderID, ok := ParseProviderQualifiedID(selected.Key); ok {
+		anime.ProviderName = selectedProviderName
+		anime.ProviderId = rawProviderID
+	} else {
+		anime.ProviderName = "animepahe"
+		anime.ProviderId = selected.Key
+	}
+	anime.Ep.NextEpisode = NextEpisode{}
+	Log(fmt.Sprintf("Updated Animepahe ProviderId to %s after stale mapping", anime.ProviderId))
+	return true
 }
 
 func CheckAndDownloadFiles(storagePath string, filesToCheck []string) error {
