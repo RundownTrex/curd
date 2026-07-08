@@ -655,47 +655,22 @@ func main() {
 					time.Sleep(1000 * time.Millisecond) // Checked every second
 
 					timePos, err := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "time-pos"})
+
+					// ── Check if mpv is still reachable ──────────────────────────────
 					if err != nil {
 						internal.Log("Error getting playback time: " + err.Error())
 
-						// Detect whether playback actually ended (EOF) even if mpv is still
-						// running in idle mode (--idle=yes).
 						mpvRunning := internal.IsMPVRunning(anime.Ep.Player.SocketPath)
-						playbackEndedAtEOF := false
-						playbackInactive := false
-						if mpvRunning && anime.Ep.Started {
-							eofReached, eofErr := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "eof-reached"})
-							if eofErr != nil {
-								internal.Log("Error getting eof-reached: " + eofErr.Error())
-							} else if reached, ok := eofReached.(bool); ok && reached {
-								playbackEndedAtEOF = true
-							}
-
-							if !playbackEndedAtEOF {
-								hasActivePlayback, activeErr := internal.HasActivePlayback(anime.Ep.Player.SocketPath)
-								if activeErr != nil {
-									internal.Log("Error checking active playback: " + activeErr.Error())
-								} else if !hasActivePlayback {
-									playbackInactive = true
-								}
-							}
-						}
-
-						// Playback ended (mpv closed or EOF reached) — decide what to do
-						if !mpvRunning || playbackEndedAtEOF || playbackInactive {
+						if !mpvRunning {
+							// mpv process is gone entirely
 							percentageWatched := internal.PercentageWatched(anime.Ep.Player.PlaybackTime, anime.Ep.Duration)
-							internal.Log(fmt.Sprintf("Playback ended. EOF: %t, Inactive: %t, Watched: %.1f%%, Required: %d%%", playbackEndedAtEOF, playbackInactive, percentageWatched, userCurdConfig.PercentageToMarkComplete))
+							internal.Log(fmt.Sprintf("MPV closed. Watched: %.1f%%, Required: %d%%", percentageWatched, userCurdConfig.PercentageToMarkComplete))
 
-							// Always treat true EOF as completed, even if duration metadata is missing.
-							isCompleted := playbackEndedAtEOF || int(percentageWatched) >= userCurdConfig.PercentageToMarkComplete
+							isCompleted := int(percentageWatched) >= userCurdConfig.PercentageToMarkComplete
 							if isCompleted {
-								// ── Episode completed ──────────────────────────────────────────────
 								anime.Ep.IsCompleted = true
-
-								// Update local DB
 								internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, internal.ConvertSecondsToMinutes(anime.Ep.Duration), internal.GetAnimeName(anime), anime.ProviderName)
 
-								// Update remote progress BEFORE prompting
 								if !anime.Rewatching {
 									err2 := internal.UpdateAnimeProgressDual(user.AnilistToken, user.MalToken, anime.AnilistId, anime.MalId, anime.Ep.Number, &userCurdConfig)
 									if err2 != nil {
@@ -705,15 +680,7 @@ func main() {
 									}
 								}
 
-								// Close the mpv window when playback reaches episode end.
-								if playbackEndedAtEOF {
-									if err2 := internal.ExitMPV(anime.Ep.Player.SocketPath); err2 != nil {
-										internal.Log("Error closing MPV after EOF: " + err2.Error())
-									}
-								}
-
 								if !userCurdConfig.NextEpisodePrompt {
-									// Auto-advance
 									internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
 									retryProviderCh <- false
 								} else if userCurdConfig.RofiSelection {
@@ -727,7 +694,6 @@ func main() {
 									}
 									retryProviderCh <- false
 								} else {
-									// CLI mode: show next-episode prompt
 									options := []internal.SelectionOption{
 										{Key: "yes", Label: fmt.Sprintf("Continue to next episode (%d)", anime.Ep.Number+1)},
 									}
@@ -744,7 +710,7 @@ func main() {
 									}
 								}
 							} else {
-								// ── Premature close ────────────────────────────────────────────────
+								// ── Premature close (mpv gone, not enough watched) ────────
 								internal.QuitActiveSelectionMenu()
 
 								if internal.PromptTryAnotherProvider(&userCurdConfig) {
@@ -757,10 +723,11 @@ func main() {
 							closeSkipLoop()
 							return
 						}
+						// mpv is running but time-pos errored — could be transitional, keep polling
 						continue
 					}
 
-					// timePos obtained — update playback state
+					// ── time-pos succeeded — update playback state ───────────────────
 					if timePos != nil {
 						currentPos, ok := timePos.(float64)
 						if ok {
@@ -785,6 +752,75 @@ func main() {
 
 							anime.Ep.Player.PlaybackTime = int(currentPos + 0.5)
 							internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, internal.ConvertSecondsToMinutes(anime.Ep.Duration), internal.GetAnimeName(anime), anime.ProviderName)
+						}
+					}
+
+					// ── Check eof-reached every tick (works with --keep-open=yes) ────
+					// With --keep-open=yes, mpv pauses at the last frame on EOF.
+					// time-pos still returns successfully, so we must check eof-reached
+					// independently on every cycle, not just inside the error block.
+					if anime.Ep.Started {
+						eofReached, eofErr := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "eof-reached"})
+						if eofErr == nil {
+							if reached, ok := eofReached.(bool); ok && reached {
+								internal.Log("EOF detected via eof-reached property")
+
+								percentageWatched := internal.PercentageWatched(anime.Ep.Player.PlaybackTime, anime.Ep.Duration)
+								internal.Log(fmt.Sprintf("Playback ended at EOF. Watched: %.1f%%, Required: %d%%", percentageWatched, userCurdConfig.PercentageToMarkComplete))
+
+								anime.Ep.IsCompleted = true
+
+								// Update local DB
+								internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, internal.ConvertSecondsToMinutes(anime.Ep.Duration), internal.GetAnimeName(anime), anime.ProviderName)
+
+								// Update remote progress BEFORE prompting
+								if !anime.Rewatching {
+									err2 := internal.UpdateAnimeProgressDual(user.AnilistToken, user.MalToken, anime.AnilistId, anime.MalId, anime.Ep.Number, &userCurdConfig)
+									if err2 != nil {
+										internal.Log("Error updating progress on completion: " + err2.Error())
+									} else {
+										internal.CurdOut(fmt.Sprintf("Episode %d marked complete! Progress updated.", anime.Ep.Number))
+									}
+								}
+
+								// Close mpv window
+								if err2 := internal.ExitMPV(anime.Ep.Player.SocketPath); err2 != nil {
+									internal.Log("Error closing MPV after EOF: " + err2.Error())
+								}
+
+								if !userCurdConfig.NextEpisodePrompt {
+									internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
+									retryProviderCh <- false
+								} else if userCurdConfig.RofiSelection {
+									if internal.NextEpisodePromptRofi(&userCurdConfig) {
+										internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
+									} else {
+										if anime.TotalEpisodes > 0 && anime.Ep.Number == anime.TotalEpisodes && !anime.IsAiring {
+											internal.HandleLastEpisodeCompletion(&userCurdConfig, &anime, &user)
+										}
+										internal.ExitCurd(nil)
+									}
+									retryProviderCh <- false
+								} else {
+									options := []internal.SelectionOption{
+										{Key: "yes", Label: fmt.Sprintf("Continue to next episode (%d)", anime.Ep.Number+1)},
+									}
+									internal.CurdOut(fmt.Sprintf("Episode %d finished!", anime.Ep.Number))
+									sel, _ := internal.DynamicSelect(options)
+									if sel.Key == "yes" {
+										internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
+										retryProviderCh <- false
+									} else {
+										if anime.TotalEpisodes > 0 && anime.Ep.Number == anime.TotalEpisodes && !anime.IsAiring {
+											internal.HandleLastEpisodeCompletion(&userCurdConfig, &anime, &user)
+										}
+										internal.ExitCurd(nil)
+									}
+								}
+
+								closeSkipLoop()
+								return
+							}
 						}
 					}
 				}
