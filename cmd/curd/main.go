@@ -240,6 +240,7 @@ func main() {
 	}
 
 	internal.SetupCurd(&userCurdConfig, &anime, &user, &databaseAnimes, databaseFile)
+	trackingService = internal.GetTrackingService(&userCurdConfig)
 
 	// Find anime in user's list using the correct ID based on tracking service
 	var idToFind string
@@ -312,12 +313,12 @@ func main() {
 			internal.CurdOut(fmt.Sprintf("\033[1;36mUser explicitly selected provider: %s\033[0m", selectedProvider))
 			if selectedProvider != anime.ProviderName {
 				anime.ProviderName = selectedProvider
-				anime.ProviderId = "" // Force re-search on the chosen provider
+				anime.ProviderId = ""                         // Force re-search on the chosen provider
 				anime.Ep.NextEpisode = internal.NextEpisode{} // Clear any prefetched episode from the old provider
 			}
 			userCurdConfig.Provider = selectedProvider
 			anime.Ep.Links = nil // Clear old links so they are re-fetched
-			
+
 			// Set to false so that the link-fetching block below executes
 			retryProvider = false
 		}
@@ -325,17 +326,27 @@ func main() {
 		if !retryProvider {
 			// Get MalId and CoverImage (only if discord presence is enabled)
 			if userCurdConfig.DiscordPresence {
-				anime.MalId, anime.CoverImage, err = internal.GetAnimeIDAndImage(anime.AnilistId)
-				if err != nil {
-					internal.Log("Error getting anime ID and image: " + err.Error())
+				if trackingService == "mal" || trackingService == "myanimelist" {
+					if anime.MalId == 0 {
+						anime.MalId = anime.AnilistId
+					}
+				} else {
+					anime.MalId, anime.CoverImage, err = internal.GetAnimeIDAndImage(anime.AnilistId)
+					if err != nil {
+						internal.Log("Error getting anime ID and image: " + err.Error())
+					}
 				}
 				// Skip initial Discord presence - wait for MPV to provide real duration
 				// This avoids showing the default 25-minute duration before the video starts
 				internal.Log("Waiting for MPV to start to get actual video duration before showing Discord presence")
 			} else if anime.MalId == 0 {
-				anime.MalId, err = internal.GetAnimeMalID(anime.AnilistId)
-				if err != nil {
-					internal.Log("Error getting anime MAL ID: " + err.Error())
+				if trackingService == "mal" || trackingService == "myanimelist" {
+					anime.MalId = anime.AnilistId
+				} else {
+					anime.MalId, err = internal.GetAnimeMalID(anime.AnilistId)
+					if err != nil {
+						internal.Log("Error getting anime MAL ID: " + err.Error())
+					}
 				}
 			}
 
@@ -647,12 +658,37 @@ func main() {
 					if err != nil {
 						internal.Log("Error getting playback time: " + err.Error())
 
-						// MPV is gone — decide what to do
-						if !internal.IsMPVRunning(anime.Ep.Player.SocketPath) {
-							percentageWatched := internal.PercentageWatched(anime.Ep.Player.PlaybackTime, anime.Ep.Duration)
-							internal.Log(fmt.Sprintf("MPV closed. Watched: %.1f%%, Required: %d%%", percentageWatched, userCurdConfig.PercentageToMarkComplete))
+						// Detect whether playback actually ended (EOF) even if mpv is still
+						// running in idle mode (--idle=yes).
+						mpvRunning := internal.IsMPVRunning(anime.Ep.Player.SocketPath)
+						playbackEndedAtEOF := false
+						playbackInactive := false
+						if mpvRunning && anime.Ep.Started {
+							eofReached, eofErr := internal.MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "eof-reached"})
+							if eofErr != nil {
+								internal.Log("Error getting eof-reached: " + eofErr.Error())
+							} else if reached, ok := eofReached.(bool); ok && reached {
+								playbackEndedAtEOF = true
+							}
 
-							if int(percentageWatched) >= userCurdConfig.PercentageToMarkComplete {
+							if !playbackEndedAtEOF {
+								hasActivePlayback, activeErr := internal.HasActivePlayback(anime.Ep.Player.SocketPath)
+								if activeErr != nil {
+									internal.Log("Error checking active playback: " + activeErr.Error())
+								} else if !hasActivePlayback {
+									playbackInactive = true
+								}
+							}
+						}
+
+						// Playback ended (mpv closed or EOF reached) — decide what to do
+						if !mpvRunning || playbackEndedAtEOF || playbackInactive {
+							percentageWatched := internal.PercentageWatched(anime.Ep.Player.PlaybackTime, anime.Ep.Duration)
+							internal.Log(fmt.Sprintf("Playback ended. EOF: %t, Inactive: %t, Watched: %.1f%%, Required: %d%%", playbackEndedAtEOF, playbackInactive, percentageWatched, userCurdConfig.PercentageToMarkComplete))
+
+							// Always treat true EOF as completed, even if duration metadata is missing.
+							isCompleted := playbackEndedAtEOF || int(percentageWatched) >= userCurdConfig.PercentageToMarkComplete
+							if isCompleted {
 								// ── Episode completed ──────────────────────────────────────────────
 								anime.Ep.IsCompleted = true
 
@@ -669,6 +705,13 @@ func main() {
 									}
 								}
 
+								// Close the mpv window when playback reaches episode end.
+								if playbackEndedAtEOF {
+									if err2 := internal.ExitMPV(anime.Ep.Player.SocketPath); err2 != nil {
+										internal.Log("Error closing MPV after EOF: " + err2.Error())
+									}
+								}
+
 								if !userCurdConfig.NextEpisodePrompt {
 									// Auto-advance
 									internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
@@ -677,6 +720,9 @@ func main() {
 									if internal.NextEpisodePromptRofi(&userCurdConfig) {
 										internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
 									} else {
+										if anime.TotalEpisodes > 0 && anime.Ep.Number == anime.TotalEpisodes && !anime.IsAiring {
+											internal.HandleLastEpisodeCompletion(&userCurdConfig, &anime, &user)
+										}
 										internal.ExitCurd(nil)
 									}
 									retryProviderCh <- false
@@ -691,6 +737,9 @@ func main() {
 										internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
 										retryProviderCh <- false
 									} else {
+										if anime.TotalEpisodes > 0 && anime.Ep.Number == anime.TotalEpisodes && !anime.IsAiring {
+											internal.HandleLastEpisodeCompletion(&userCurdConfig, &anime, &user)
+										}
 										internal.ExitCurd(nil)
 									}
 								}
@@ -715,7 +764,6 @@ func main() {
 					if timePos != nil {
 						currentPos, ok := timePos.(float64)
 						if ok {
-
 
 							if !anime.Ep.Started {
 								anime.Ep.Started = true
@@ -794,21 +842,8 @@ func main() {
 		}
 
 		if anime.Ep.IsCompleted && !anime.Rewatching {
-			if anime.TotalEpisodes > 0 && anime.Ep.Number-1 != anime.TotalEpisodes {
-				go func() {
-					err = internal.UpdateAnimeProgressDual(user.AnilistToken, user.MalToken, anime.AnilistId, anime.MalId, anime.Ep.Number-1, &userCurdConfig)
-					if err != nil {
-						internal.Log("Error updating progress: " + err.Error())
-					}
-				}()
-			} else {
-				internal.ExitMPV(anime.Ep.Player.SocketPath)
-				err = internal.UpdateAnimeProgressDual(user.AnilistToken, user.MalToken, anime.AnilistId, anime.MalId, anime.Ep.Number-1, &userCurdConfig)
-				if err != nil {
-					internal.Log("Error updating progress: " + err.Error())
-				}
-			}
-
+			// Redundant background updates have been removed, as they are correctly handled
+			// before the prompt and inside StartNextEpisode.
 			anime.Ep.IsCompleted = false
 
 			if anime.Ep.Number-1 == anime.TotalEpisodes && userCurdConfig.ScoreOnCompletion && anime.TotalEpisodes > 0 {
@@ -840,4 +875,3 @@ func main() {
 		anime.Ep.Links = []string{}
 	}
 }
-

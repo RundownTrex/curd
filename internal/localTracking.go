@@ -29,8 +29,8 @@ func LocalAddAnime(databaseFile string, anilistID int, providerName, providerID 
 		strconv.Itoa(watchingEpisode),
 		strconv.Itoa(watchingTime),
 		strconv.Itoa(animeDuration),
-		animeName,
 		providerName,
+		animeName,
 	})
 	if err != nil {
 		CurdOut(fmt.Sprintf("Error writing to file: %v", err))
@@ -151,7 +151,30 @@ func parseAnimeRow(row []string) *Anime {
 		},
 	}
 
-	if len(row) == 6 {
+	if len(row) >= 7 {
+		// To support both legacy fork format (index 5: Title, index 6: Provider)
+		// and upstream Wraient format (index 5: Provider, index 6: Title)
+		if normalizeProviderName(row[5]) != "" {
+			anime.ProviderName = row[5]
+			anime.Title = AnimeTitle{
+				English: row[6],
+				Romaji:  row[6],
+			}
+		} else if normalizeProviderName(row[6]) != "" {
+			anime.ProviderName = row[6]
+			anime.Title = AnimeTitle{
+				English: row[5],
+				Romaji:  row[5],
+			}
+		} else {
+			// Fallback to upstream format if neither matches strict provider name
+			anime.ProviderName = row[5]
+			anime.Title = AnimeTitle{
+				English: row[6],
+				Romaji:  row[6],
+			}
+		}
+	} else if len(row) == 6 {
 		anime.Title = AnimeTitle{
 			English: row[5],
 			Romaji:  row[5],
@@ -161,10 +184,6 @@ func parseAnimeRow(row []string) *Anime {
 			English: row[4],
 			Romaji:  row[4],
 		}
-	}
-
-	if len(row) >= 7 {
-		anime.ProviderName = row[6]
 	}
 
 	return anime
@@ -267,8 +286,8 @@ func LocalUpdateAnime(databaseFile string, anilistID int, providerID string, wat
 			strconv.Itoa(anime.Ep.Number),
 			strconv.Itoa(anime.Ep.Player.PlaybackTime),
 			strconv.Itoa(anime.Ep.Duration),
-			GetAnimeName(anime),
 			anime.ProviderName,
+			GetAnimeName(anime),
 		}
 		if err := writer.Write(record); err != nil {
 			CurdOut(fmt.Sprintf("Error writing record: %v", err))

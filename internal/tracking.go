@@ -313,3 +313,14 @@ func GetServiceName(config *CurdConfig) string {
 	}
 	return "AniList"
 }
+
+// IsAniListServiceUnavailable returns true when AniList reports a temporary outage.
+func IsAniListServiceUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := strings.ToLower(err.Error())
+	return strings.Contains(errMsg, "anilist api has been temporarily disabled") ||
+		strings.Contains(errMsg, "temporarily disabled due to severe stability issues")
+}

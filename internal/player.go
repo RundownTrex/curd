@@ -369,7 +369,7 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 	titleArgs := []string{fmt.Sprintf("--title=%s", title), fmt.Sprintf("--force-media-title=%s", title)}
 
 	// Keep the window open after episode completes, new episode starts in the same mpv window
-	args = append(args, "--force-window=yes", "--idle=yes")
+	args = append(args, "--force-window=yes", "--idle=yes", "--keep-open=yes")
 	args = append(args, titleArgs...)
 
 	// Prepare arguments for mpv-compatible players.

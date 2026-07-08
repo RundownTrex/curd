@@ -724,12 +724,33 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 	var animeListOptions []SelectionOption
 	var animeListMapPreview map[string]RofiSelectPreview
 
-	// Get user id, username and Anime list
+	// Get user id, username and anime list.
+	// If AniList is temporarily down and MAL is available, fall back for this session.
 	user.Id, user.Username, err = GetUserIDUnified(user.Token, userCurdConfig)
 	if err != nil {
 		Log(fmt.Sprintf("Failed to get user ID: %v", err))
-		serviceName := GetServiceName(userCurdConfig)
-		ExitCurd(fmt.Errorf("Failed to get user ID from %s\nYou can reset the token by running `curd -change-token` or `curd -change-mal-token`", serviceName))
+
+		service := GetTrackingService(userCurdConfig)
+		if service == "anilist" && IsAniListServiceUnavailable(err) {
+			if userCurdConfig.DualTracking && user.MalToken != "" {
+				Log("AniList API is unavailable, falling back to MAL for this session")
+				CurdOut("AniList API is temporarily unavailable. Falling back to MyAnimeList for this session.")
+				userCurdConfig.TrackingService = "mal"
+				userCurdConfig.DualTracking = false
+				user.Token = user.MalToken
+
+				user.Id, user.Username, err = GetUserIDUnified(user.Token, userCurdConfig)
+				if err != nil {
+					Log(fmt.Sprintf("Failed to get user ID after fallback to MAL: %v", err))
+					ExitCurd(fmt.Errorf("AniList is currently unavailable and fallback to MyAnimeList failed: %v", err))
+				}
+			} else {
+				ExitCurd(fmt.Errorf("AniList API is temporarily unavailable right now. Please try again later, or set TrackingService=mal and run `curd -change-mal-token`"))
+			}
+		} else {
+			serviceName := GetServiceName(userCurdConfig)
+			ExitCurd(fmt.Errorf("Failed to get user ID from %s\nYou can reset the token by running `curd -change-token` or `curd -change-mal-token`", serviceName))
+		}
 	}
 
 	// Get the anime list data
@@ -744,7 +765,7 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		anilistUserData, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, false)
 		if err != nil {
 			Log(fmt.Sprintf("Failed to get user data: %v", err))
-			ExitCurd(fmt.Errorf("Failed to get user ID\nYou can reset the token by running `curd -change-token`"))
+			ExitCurd(fmt.Errorf("Failed to get user data from %s", GetServiceName(userCurdConfig)))
 		}
 		user.AnimeList = ParseAnimeList(anilistUserData)
 	}
@@ -929,10 +950,17 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		malID := selectedID
 		anilistID, convErr := ConvertMALIDToAnilist(malID, "")
 		if convErr != nil {
-			Log(fmt.Sprintf("Failed to convert MAL ID to AniList ID: %v", convErr))
-			ExitCurd(fmt.Errorf("Failed to convert MAL ID to AniList ID"))
+			if IsAniListServiceUnavailable(convErr) {
+				Log(fmt.Sprintf("AniList unavailable while converting MAL ID to AniList ID: %v", convErr))
+				CurdOut("AniList API is temporarily unavailable. Continuing with MyAnimeList IDs for this session.")
+				anime.AnilistId = malID
+			} else {
+				Log(fmt.Sprintf("Failed to convert MAL ID to AniList ID: %v", convErr))
+				ExitCurd(fmt.Errorf("Failed to convert MAL ID to AniList ID"))
+			}
+		} else {
+			anime.AnilistId = anilistID
 		}
-		anime.AnilistId = anilistID
 		anime.MalId = malID
 	} else {
 		// selectedID is an AniList ID
@@ -1035,21 +1063,25 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		}
 
 		if selectedOption.Key == "yes" {
-			err = AddAnimeToWatchingListUnified(anime.AnilistId, user.Token, userCurdConfig)
+			mediaID := anime.AnilistId
+			if service == "mal" {
+				mediaID = anime.MalId
+			}
+			err = AddAnimeToWatchingListUnified(mediaID, user.Token, userCurdConfig)
 			if err != nil {
 				Log("Error adding anime to watching list: " + err.Error())
 				ExitCurd(err)
 			}
 			// Refresh user's anime list after adding
 			if userCurdConfig.RofiSelection && userCurdConfig.ImagePreview {
-				anilistUserDataPreview, err := GetUserDataPreview(user.Token, user.Id)
+				anilistUserDataPreview, err := GetUserDataUnified(user.Token, user.Id, userCurdConfig, true)
 				if err != nil {
 					Log("Error refreshing anime list: " + err.Error())
 					ExitCurd(err)
 				}
 				user.AnimeList = ParseAnimeList(anilistUserDataPreview)
 			} else {
-				anilistUserData, err := GetUserData(user.Token, user.Id)
+				anilistUserData, err := GetUserDataUnified(user.Token, user.Id, userCurdConfig, false)
 				if err != nil {
 					Log("Error refreshing anime list: " + err.Error())
 					ExitCurd(err)
@@ -1080,7 +1112,11 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 	// show a rating prompt or mark a seasonal anime as completed when the user
 	// catches up to the latest released episode.
 	{
-		updatedAnime, err := GetAnimeDataByID(anime.AnilistId, user.Token)
+		detailsID := anime.AnilistId
+		if service == "mal" {
+			detailsID = anime.MalId
+		}
+		updatedAnime, err := GetAnimeDataByIDUnified(detailsID, user.Token, userCurdConfig)
 		if err != nil {
 			Log(fmt.Sprintf("Error getting updated anime data: %v", err))
 		} else {
@@ -1852,7 +1888,6 @@ func SelectProviderInteractive(links []string) string {
 	// We'll trust the provider system to return the prioritized links
 	return links[0]
 }
-
 
 // DisplayEpisodeLinks displays all fetched episode links in a user-friendly format
 func DisplayEpisodeLinks(links []string) {
