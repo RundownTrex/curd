@@ -156,7 +156,7 @@ var allanimeNamedProviders = []string{
 
 const (
 	allanimePersistedQueryReferer = "https://youtu-chan.com"
-	allanimeGraphQLReferer        = "https://allanime.to"
+	allanimeGraphQLReferer        = "https://isekai2nd.com"
 )
 
 func isDirectPlayableAllanimeSource(source allanimeSource) bool {
@@ -208,7 +208,7 @@ func sortAllanimeSourcesByPriority(sourceUrls []allanimeSource) []allanimeSource
 }
 
 func normalizeAllanimeProviderPath(providerID string) string {
-	const allanimePrefix = "/https://allanime.day"
+	const allanimePrefix = "/https://isekai2nd.com"
 
 	if strings.HasPrefix(providerID, allanimePrefix) {
 		trimmed := strings.TrimPrefix(providerID, allanimePrefix)
@@ -422,7 +422,7 @@ func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, er
 		return nil, fmt.Errorf("failed to marshal persisted query extensions: %w", err)
 	}
 
-	persistedURL := "https://api.allanime.day/api?variables=" + url.QueryEscape(string(variablesJSON)) + "&extensions=" + url.QueryEscape(string(extensionsJSON))
+	persistedURL := "https://api.isekai2nd.com/api?variables=" + url.QueryEscape(string(variablesJSON)) + "&extensions=" + url.QueryEscape(string(extensionsJSON))
 
 	req, err := http.NewRequest("GET", persistedURL, nil)
 	if err != nil {
@@ -466,7 +466,7 @@ func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, er
 			return nil, fmt.Errorf("failed to marshal request body: %w", err)
 		}
 
-		req, err := http.NewRequest("POST", "https://api.allanime.day/api", bytes.NewBuffer(requestBody))
+		req, err := http.NewRequest("POST", "https://api.isekai2nd.com/api", bytes.NewBuffer(requestBody))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}

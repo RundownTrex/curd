@@ -8,7 +8,7 @@ import (
 type Provider struct{}
 
 func (p *Provider) Name() string {
-	return "allanime"
+	return "mkissa"
 }
 
 func (p *Provider) SearchAnime(query, mode string) ([]providers.SelectionOption, error) {

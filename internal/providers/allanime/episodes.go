@@ -50,14 +50,14 @@ func getAllAnimeEpisodesList(showID, mode string) ([]string, error) {
 	}
 
 	// Make the HTTP POST request
-	req, err := http.NewRequest("POST", "https://api.allanime.day/api", bytes.NewBuffer(requestBody))
+	req, err := http.NewRequest("POST", "https://api.isekai2nd.com/api", bytes.NewBuffer(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Referer", "https://allanime.to")
-	req.Header.Set("Origin", "https://allanime.to")
+	req.Header.Set("Referer", "https://isekai2nd.com")
+	req.Header.Set("Origin", "https://isekai2nd.com")
 
 	resp, err := curdhost.HTTPClient().Do(req)
 	if err != nil {

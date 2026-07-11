@@ -231,7 +231,7 @@ func resolveAllanimeClockProvider(providerName, providerPath string) ([]allanime
 }
 
 func fetchAllanimeClockResponse(providerPath string) ([]byte, map[string]interface{}, error) {
-	requestURL := "https://allanime.day" + providerPath
+	requestURL := "https://isekai2nd.com" + providerPath
 	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
 		return nil, nil, err

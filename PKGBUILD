@@ -1,6 +1,6 @@
 # Maintainer: Wraient <rushikeshwastaken@gmail.com>
 pkgname='curd'
-pkgver=1.1.4
+pkgver=2.0.0
 pkgrel=1
 pkgdesc="Watch anime in CLI with AniList Tracking, Discord RPC, Intro/Outro/Filler/Recap Skipping, etc."
 arch=('x86_64')
