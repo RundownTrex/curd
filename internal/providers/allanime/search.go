@@ -50,8 +50,8 @@ func searchAllAnime(query, mode string) ([]providers.SelectionOption, error) {
 func searchAnimeByMode(query, mode, preferredMode string) ([]providers.SelectionOption, error) {
 	const (
 		agent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0"
-		allanimeRef  = "https://isekai2nd.com"
-		allanimeBase = "isekai2nd.com"
+		allanimeRef  = "https://mkissa.to"
+		allanimeBase = "allanime.day"
 		allanimeAPI  = "https://api." + allanimeBase + "/api"
 	)
 

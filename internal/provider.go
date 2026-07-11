@@ -460,22 +460,22 @@ func shouldOfferAnimepaheFallback(config *CurdConfig, providerNames []string) bo
 		return false
 	}
 
-	hasAllanime := false
+	hasMkissa := false
 	hasAnimepahe := false
 	for _, providerName := range providerNames {
 		switch providerName {
-		case "allanime":
-			hasAllanime = true
+		case "mkissa":
+			hasMkissa = true
 		case "animepahe":
 			hasAnimepahe = true
 		}
 	}
 
-	return hasAllanime && !hasAnimepahe
+	return hasMkissa && !hasAnimepahe
 }
 
 func promptAnimepaheFallbackConsent() (bool, bool, error) {
-	CurdOut("AllAnime returned no results. Animepahe may require downloading a Chromium browser for DDoS-Guard verification (~500 MB). Use Animepahe fallback?")
+	CurdOut("Mkissa returned no results. Animepahe may require downloading a Chromium browser for DDoS-Guard verification (~500 MB). Use Animepahe fallback?")
 	selected, err := DynamicSelect([]SelectionOption{
 		{Key: "use", Label: "Use Animepahe fallback"},
 		{Key: "never", Label: "Do not use Animepahe"},
@@ -854,7 +854,7 @@ func configForProviderUpdate(config CurdConfig) *CurdConfig {
 }
 
 func promptAnimepaheEpisodeFallbackConsent(mode string, epNo int) (bool, bool, error) {
-	CurdOut(fmt.Sprintf("No %s stream was found on AllAnime for episode %d. Animepahe may require downloading a Chromium browser for DDoS-Guard verification (~500 MB). Use Animepahe fallback?", normalizeTranslationType(mode), epNo))
+	CurdOut(fmt.Sprintf("No %s stream was found on Mkissa for episode %d. Animepahe may require downloading a Chromium browser for DDoS-Guard verification (~500 MB). Use Animepahe fallback?", normalizeTranslationType(mode), epNo))
 	selected, err := DynamicSelect([]SelectionOption{
 		{Key: "use", Label: "Use Animepahe fallback"},
 		{Key: "never", Label: "Do not use Animepahe"},

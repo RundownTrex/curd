@@ -55,7 +55,7 @@ func getLinksFromEncodedSourceUrls(sourceUrls []allanimeSource) ([]string, map[s
 			continue
 		}
 		sourceURL := strings.TrimSpace(source.SourceUrl)
-		if !strings.HasPrefix(sourceURL, "--") || len(sourceURL) <= 2 {
+		if !strings.HasPrefix(sourceURL, "--") && !strings.HasPrefix(sourceURL, "http://") && !strings.HasPrefix(sourceURL, "https://") {
 			continue
 		}
 		jobs = append(jobs, providerJob{
@@ -80,7 +80,12 @@ func getLinksFromEncodedSourceUrls(sourceUrls []allanimeSource) ([]string, map[s
 		wg.Add(1)
 		go func(idx int, providerName, encodedURL string) {
 			defer wg.Done()
-			decodedProviderID := decodeProviderID(encodedURL[2:])
+			var decodedProviderID string
+			if strings.HasPrefix(encodedURL, "--") && len(encodedURL) > 2 {
+				decodedProviderID = decodeProviderID(encodedURL[2:])
+			} else {
+				decodedProviderID = encodedURL
+			}
 			curdhost.Log(fmt.Sprintf("Fetching Allanime provider %s via %s", providerName, decodedProviderID))
 			streams, err := resolveAllanimeClockProvider(providerName, decodedProviderID)
 			results <- streamResult{index: idx, streams: streams, err: err}
@@ -170,10 +175,25 @@ func resolveAllanimeClockProvider(providerName, providerPath string) ([]allanime
 		if isUnreliableAllanimeDirectURL(providerPath) {
 			return nil, fmt.Errorf("skipping unreliable fast4speed source")
 		}
+
+		score := 0
+		if providerName == "Ok" {
+			score = 100 // Prefer Ok.ru as it works reliably out of the box in yt-dlp
+		} else if providerName == "Mp4" {
+			score = 80
+			if link := extractMp4UploadLink(providerPath); link != "" {
+				providerPath = link
+			}
+		} else if providerName == "Fm-Hls" {
+			score = 60
+		} else if providerName == "Uni" {
+			score = 40
+		}
+
 		return []allanimeResolvedStream{{
 			URL:          providerPath,
 			Referrer:     allanimeGraphQLReferer,
-			QualityScore: 0,
+			QualityScore: score,
 		}}, nil
 	}
 
@@ -231,7 +251,7 @@ func resolveAllanimeClockProvider(providerName, providerPath string) ([]allanime
 }
 
 func fetchAllanimeClockResponse(providerPath string) ([]byte, map[string]interface{}, error) {
-	requestURL := "https://isekai2nd.com" + providerPath
+	requestURL := "https://mkissa.to" + providerPath
 	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
 		return nil, nil, err
@@ -400,8 +420,34 @@ func extractAllanimeClockReferer(rawBody []byte) string {
 }
 
 func extractAllanimeClockSubtitle(rawBody []byte) string {
-	if match := allanimeClockSubtitlePattern.FindSubmatch(rawBody); len(match) == 2 {
-		return string(match[1])
+	matches := regexp.MustCompile(`"subtitles":\[{"url":"([^"]+)"`).FindSubmatch(rawBody)
+	if len(matches) > 1 {
+		return string(matches[1])
+	}
+	return ""
+}
+
+func extractMp4UploadLink(embedURL string) string {
+	req, err := http.NewRequest("GET", embedURL, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", allanimeUserAgent)
+	req.Header.Set("Referer", allanimeGraphQLReferer)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+	re := regexp.MustCompile(`src:\s*"([^"]+)"`)
+	matches := re.FindStringSubmatch(string(body))
+	if len(matches) > 1 {
+		return matches[1]
 	}
 	return ""
 }

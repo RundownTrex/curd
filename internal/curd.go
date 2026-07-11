@@ -1148,21 +1148,26 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		}
 
 		if anime.TotalEpisodes == 0 {
-			CurdOut("Still unable to determine total episodes.")
-			CurdOut(fmt.Sprintf("Your AniList progress: %d", selectedAnilistAnime.Progress))
-			var episodeNumber int
-			if userCurdConfig.RofiSelection {
-				userInput, err := GetUserInputFromRofi("Enter the episode you want to start from")
-				if err != nil {
-					Log("Error getting user input: " + err.Error())
-					ExitCurd(fmt.Errorf("Error getting user input: " + err.Error()))
-				}
-				episodeNumber, err = strconv.Atoi(userInput)
+			if selectedAnilistAnime.Progress > 0 {
+				CurdOut("Still unable to determine total episodes, defaulting to next episode.")
+				anime.Ep.Number = selectedAnilistAnime.Progress + 1
 			} else {
-				fmt.Print("Enter the episode you want to start from: ")
-				fmt.Scanln(&episodeNumber)
+				CurdOut("Still unable to determine total episodes.")
+				CurdOut(fmt.Sprintf("Your AniList progress: %d", selectedAnilistAnime.Progress))
+				var episodeNumber int
+				if userCurdConfig.RofiSelection {
+					userInput, err := GetUserInputFromRofi("Enter the episode you want to start from")
+					if err != nil {
+						Log("Error getting user input: " + err.Error())
+						ExitCurd(fmt.Errorf("Error getting user input: " + err.Error()))
+					}
+					episodeNumber, err = strconv.Atoi(userInput)
+				} else {
+					fmt.Print("Enter the episode you want to start from: ")
+					fmt.Scanln(&episodeNumber)
+				}
+				anime.Ep.Number = episodeNumber
 			}
-			anime.Ep.Number = episodeNumber
 		} else {
 			anime.Ep.Number = selectedAnilistAnime.Progress + 1
 		}

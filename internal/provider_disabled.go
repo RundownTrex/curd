@@ -26,6 +26,15 @@ func providerDisabledReason(name string) string {
 		return ""
 	}
 	if meta.DefaultDisabled {
+		config := GetGlobalConfig()
+		if config != nil {
+			names, _ := parseProviderConfig(config.Provider)
+			for _, n := range names {
+				if normalizeProviderName(n) == name {
+					return "" // explicitly requested in config
+				}
+			}
+		}
 		return meta.DisableReason
 	}
 	return ""
@@ -100,7 +109,7 @@ func filterEnabledProviders(names []string) []string {
 	return enabled
 }
 
-var preferredProviderOrder = []string{"senshi", "anipub", "anineko", "allanime", "animepahe"}
+var preferredProviderOrder = []string{"senshi", "anipub", "anineko", "mkissa", "animepahe"}
 
 func defaultEnabledProviderStack() []string {
 	registered := providers.RegisteredNames()
