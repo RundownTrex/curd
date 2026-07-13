@@ -48,6 +48,10 @@ func getLinksFromEncodedSourceUrls(sourceUrls []allanimeSource) ([]string, map[s
 		url   string
 	}
 
+	for _, s := range sourceUrls {
+		curdhost.Log("DEBUG SOURCE FOUND: " + s.SourceName)
+	}
+
 	jobs := make([]providerJob, 0)
 	for _, providerName := range allanimeNamedProviders {
 		source, ok := findNamedAllanimeSource(sourceUrls, providerName)
@@ -177,7 +181,11 @@ func resolveAllanimeClockProvider(providerName, providerPath string) ([]allanime
 		}
 
 		score := 0
-		if providerName == "Ok" {
+		if providerName == "Ak" || providerName == "Ss-Hls" {
+			score = 120
+		} else if providerName == "Sw" || providerName == "Sl-mp4" {
+			score = 110
+		} else if providerName == "Ok" {
 			score = 100 // Prefer Ok.ru as it works reliably out of the box in yt-dlp
 		} else if providerName == "Mp4" {
 			score = 80
@@ -251,7 +259,7 @@ func resolveAllanimeClockProvider(providerName, providerPath string) ([]allanime
 }
 
 func fetchAllanimeClockResponse(providerPath string) ([]byte, map[string]interface{}, error) {
-	requestURL := "https://mkissa.to" + providerPath
+	requestURL := "https://allanime.day" + strings.ReplaceAll(providerPath, "/clock", "/clock.json")
 	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
 		return nil, nil, err

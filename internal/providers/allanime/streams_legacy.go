@@ -139,23 +139,13 @@ func decodeProviderID(encoded string) string {
 	// Join the modified pairs back into a single string
 	result := strings.Join(pairs, "")
 
-	// Replace "/clock" with "/clock.json" equivalent of sed "s/\/clock/\/clock\.json/"
-	result = strings.ReplaceAll(result, "/clock", "/clock.json")
-
 	// Print the final result
 	return result
 }
 
 var allanimeNamedProviders = []string{
 	"Default",
-	"Yt-mp4",
-	"S-mp4",
-	"Fm-mp4",
-	"Luf-Mp4",
-	"Fm-Hls",
-	"Uni",
-	"Ok",
-	"Mp4",
+	"Ak",
 }
 
 const (

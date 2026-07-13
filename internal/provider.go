@@ -456,8 +456,14 @@ func searchAnimeWithProviders(providerNames []string, query, mode string) ([]Sel
 }
 
 func shouldOfferAnimepaheFallback(config *CurdConfig, providerNames []string) bool {
-	if config == nil || animepaheDeclinedInConfig(config) || !ProviderEnabled("animepahe") {
+	if config == nil || animepaheDeclinedInConfig(config) {
 		return false
+	}
+	// Do not prompt if they explicitly put "animepahe" in DisabledProviders
+	for _, dp := range parseDisabledProviderNames(config.DisabledProviders) {
+		if dp == "animepahe" {
+			return false
+		}
 	}
 
 	hasMkissa := false
