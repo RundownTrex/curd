@@ -327,6 +327,15 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 		// Wait a brief moment for the file to load
 		time.Sleep(100 * time.Millisecond)
 
+		// Also load the external subtitle for this episode if available
+		if subtitleURL := strings.TrimSpace(anime.Ep.SubtitleURL); subtitleURL != "" {
+			subCommand := []interface{}{"sub-add", subtitleURL}
+			_, subErr := MPVSendCommand(mpvSocketPath, subCommand)
+			if subErr != nil {
+				Log(fmt.Sprintf("Failed to load subtitle for next episode: %v", subErr))
+			}
+		}
+
 		// Update the window title
 		titleCommand := []interface{}{"set_property", "force-media-title", title}
 		_, err = MPVSendCommand(mpvSocketPath, titleCommand)
@@ -379,7 +388,7 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 	if len(args) > 0 {
 		mpvArgs = append(mpvArgs, args...)
 	}
-	mpvArgs = append(mpvArgs, link)
+	// Link will be added at the end
 
 	// Detect Android strictly from GOOS to avoid false positives from PATH binaries.
 	isAndroid := runtime.GOOS == "android"
@@ -423,6 +432,9 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 		playerArgs = translateMPVArgsForIINA(mpvArgs)
 		playerArgs = append(playerArgs, "--no-stdin")
 	}
+	
+	// Add the link as the final argument
+	playerArgs = append(playerArgs, link)
 
 	command = exec.Command(resolvedPlayerBinary, playerArgs...)
 

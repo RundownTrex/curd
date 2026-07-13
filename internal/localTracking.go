@@ -410,6 +410,9 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 			ExitCurd(fmt.Errorf("No episode links found"))
 		}
 
+		anime.Ep.Links = link
+		applyStreamPlaybackHints(&anime, anime.Ep.Links, result.LinkHints)
+
 		CurdOut(fmt.Sprintf("%s - Episode %d", GetAnimeName(anime), anime.Ep.Number))
 
 		// Start video playback
