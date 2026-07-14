@@ -24,6 +24,8 @@ var slugFromPathRE = regexp.MustCompile(`/watch/([^/?#]+)`)
 
 func searchAnime(query, mode string) ([]providers.SelectionOption, error) {
 	query = strings.TrimSpace(query)
+	// anineko's search API fails to find results if the query contains an apostrophe
+	query = strings.ReplaceAll(query, "'", "")
 	if query == "" {
 		return nil, fmt.Errorf("empty search query")
 	}

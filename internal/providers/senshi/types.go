@@ -45,3 +45,9 @@ type embedItem struct {
 	ServerFM *string `json:"serverFM"`
 	Status   string  `json:"status"`
 }
+
+type subtitleItem struct {
+	Src     string `json:"src"`
+	Label   string `json:"label"`
+	Default bool   `json:"default"`
+}

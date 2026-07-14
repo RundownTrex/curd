@@ -712,8 +712,15 @@ func ResolveUntrackedProviderSearch(config *CurdConfig, initialQuery string) (pr
 		default:
 			
 			// Clean up the label to get the pure title if it has metadata like "[provider]" or " — TV"
-			cleanTitle := selected.Label
-			if idx := strings.Index(cleanTitle, " — "); idx != -1 {
+			cleanTitle := selected.Title
+			if cleanTitle == "" {
+				cleanTitle = selected.Label
+				if idx := strings.Index(cleanTitle, " — "); idx != -1 {
+					cleanTitle = cleanTitle[:idx]
+				}
+			}
+			// Strip off the provider tag if it snuck in anyway
+			if idx := strings.LastIndex(cleanTitle, " ["); idx != -1 && strings.HasSuffix(cleanTitle, "]") {
 				cleanTitle = cleanTitle[:idx]
 			}
 			if name, rawID, ok := ParseProviderQualifiedID(selected.Key); ok {

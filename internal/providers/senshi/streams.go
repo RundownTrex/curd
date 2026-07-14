@@ -3,6 +3,7 @@ package senshi
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/wraient/curd/internal/providers"
@@ -24,8 +25,8 @@ func getEpisodeStreamsForMode(malIDStr string, config providers.PlaybackConfig, 
 	}
 
 	var embeds []embedItem
-	url := fmt.Sprintf("%s/episode-embeds/%d/%d", baseURL, malID, epNo)
-	if err := fetchJSON(http.MethodGet, url, nil, &embeds); err != nil {
+	reqURL := fmt.Sprintf("%s/episode-embeds/%d/%d", baseURL, malID, epNo)
+	if err := fetchJSON(http.MethodGet, reqURL, nil, &embeds); err != nil {
 		return nil, nil, err
 	}
 	if len(embeds) == 0 {
@@ -45,6 +46,27 @@ func getEpisodeStreamsForMode(malIDStr string, config providers.PlaybackConfig, 
 				Referrer: baseURL + "/",
 			},
 		}
+
+		if item.ServerFM != nil {
+			if u, err := url.Parse(*item.ServerFM); err == nil {
+				subInfoURL := u.Query().Get("sub.info")
+				if subInfoURL != "" {
+					var subs []subtitleItem
+					if err := fetchJSON(http.MethodGet, subInfoURL, nil, &subs); err == nil {
+						for _, sub := range subs {
+							// Prefer English subtitles
+							if strings.Contains(strings.ToLower(sub.Label), "eng") || sub.Default {
+								hint := hints[streamURL]
+								hint.Subtitle = sub.Src
+								hints[streamURL] = hint
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+
 		return []string{streamURL}, hints, nil
 	}
 

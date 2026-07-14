@@ -405,7 +405,7 @@ func main() {
 					result, err := internal.ResolveEpisodeURLForPlayback(userCurdConfig, &anime, anime.Ep.Number)
 					if err != nil {
 						internal.Log("Failed to get episode links: " + err.Error())
-						internal.CurdOut("Failed to get episode links. Try again later.")
+						internal.CurdOut(fmt.Sprintf("Failed to get episode links: %v", err))
 						internal.ExitCurd(fmt.Errorf("failed to get episode links: %v", err))
 						return
 					}

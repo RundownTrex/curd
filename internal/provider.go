@@ -381,30 +381,7 @@ func qualifySelectionOption(providerName string, option SelectionOption, stacked
 func SearchAnime(query, mode string) ([]SelectionOption, error) {
 	config := GetGlobalConfig()
 	providerNames := configuredProviderNames(config)
-	results, err := searchAnimeWithProviders(providerNames, query, mode)
-	if err != nil || len(results) > 0 {
-		return results, err
-	}
-
-	if shouldOfferAnimepaheFallback(config, providerNames) {
-		useAnimepahe, declinedAnimepahe, promptErr := promptAnimepaheFallbackConsent()
-		if promptErr != nil {
-			return results, promptErr
-		}
-		if useAnimepahe {
-			if updateErr := updateProviderConfig(config, appendProviderName(providerNames, "animepahe"), false); updateErr != nil {
-				return results, updateErr
-			}
-			return searchAnimeWithProviders(configuredProviderNames(config), query, mode)
-		}
-		if declinedAnimepahe {
-			if updateErr := updateProviderConfig(config, providerNames, true); updateErr != nil {
-				return results, updateErr
-			}
-		}
-	}
-
-	return results, nil
+	return searchAnimeWithProviders(providerNames, query, mode)
 }
 
 func searchAnimeWithProviders(providerNames []string, query, mode string) ([]SelectionOption, error) {
@@ -455,49 +432,7 @@ func searchAnimeWithProviders(providerNames []string, query, mode string) ([]Sel
 	return results, nil
 }
 
-func shouldOfferAnimepaheFallback(config *CurdConfig, providerNames []string) bool {
-	if config == nil || animepaheDeclinedInConfig(config) {
-		return false
-	}
-	// Do not prompt if they explicitly put "animepahe" in DisabledProviders
-	for _, dp := range parseDisabledProviderNames(config.DisabledProviders) {
-		if dp == "animepahe" {
-			return false
-		}
-	}
 
-	hasMkissa := false
-	hasAnimepahe := false
-	for _, providerName := range providerNames {
-		switch providerName {
-		case "mkissa":
-			hasMkissa = true
-		case "animepahe":
-			hasAnimepahe = true
-		}
-	}
-
-	return hasMkissa && !hasAnimepahe
-}
-
-func promptAnimepaheFallbackConsent() (bool, bool, error) {
-	CurdOut("Mkissa returned no results. Animepahe may require downloading a Chromium browser for DDoS-Guard verification (~500 MB). Use Animepahe fallback?")
-	selected, err := DynamicSelect([]SelectionOption{
-		{Key: "use", Label: "Use Animepahe fallback"},
-		{Key: "never", Label: "Do not use Animepahe"},
-	})
-	if err != nil {
-		return false, false, err
-	}
-	switch selected.Key {
-	case "use":
-		return true, false, nil
-	case "never":
-		return false, true, nil
-	default:
-		return false, false, nil
-	}
-}
 
 func appendProviderName(providerNames []string, providerName string) []string {
 	providerName = normalizeProviderName(providerName)
@@ -525,22 +460,7 @@ func appendProviderName(providerNames []string, providerName string) []string {
 	return result
 }
 
-func updateProviderConfig(config *CurdConfig, providerNames []string, animepaheDeclined bool) error {
-	providerValue := formatProviderConfigValue(providerNames, animepaheDeclined)
-	config.Provider = providerValue
-	CurrentProvider = nil
 
-	if strings.TrimSpace(GlobalConfigPath) == "" {
-		return nil
-	}
-
-	configMap, err := LoadConfigFromFile(GlobalConfigPath)
-	if err != nil {
-		return err
-	}
-	configMap["Provider"] = providerValue
-	return SaveConfigToFile(GlobalConfigPath, configMap)
-}
 
 func EpisodesList(showID, mode string) ([]string, error) {
 	providerName, providerID, ok := ParseProviderQualifiedID(showID)
@@ -784,34 +704,6 @@ func ResolveEpisodeURLForPlayback(config CurdConfig, anime *Anime, epNo int) (Pr
 	}
 
 	preferredErr := err
-	runtimeConfig := configForProviderUpdate(config)
-	providerNames := configuredProviderNames(runtimeConfig)
-	if shouldOfferAnimepaheFallback(runtimeConfig, providerNames) {
-		useAnimepahe, declinedAnimepahe, promptErr := promptAnimepaheEpisodeFallbackConsent(preferredMode, epNo)
-		if promptErr != nil {
-			return ProviderEpisodeResult{}, promptErr
-		}
-		if useAnimepahe {
-			if updateErr := updateProviderConfig(runtimeConfig, appendProviderName(providerNames, "animepahe"), false); updateErr != nil {
-				return ProviderEpisodeResult{}, updateErr
-			}
-			config.Provider = runtimeConfig.Provider
-			if anime != nil {
-				result, err = episodeModeResultWithProviders(config, anime, epNo, preferredMode, []string{"animepahe"})
-			} else {
-				result, err = episodeModeResult(config, anime, epNo, preferredMode)
-			}
-			if err == nil && len(result.Links) > 0 {
-				return result, nil
-			}
-			preferredErr = err
-		} else if declinedAnimepahe {
-			if updateErr := updateProviderConfig(runtimeConfig, providerNames, true); updateErr != nil {
-				return ProviderEpisodeResult{}, updateErr
-			}
-			config.Provider = runtimeConfig.Provider
-		}
-	}
 
 	fallbackMode := alternateTranslationType(preferredMode)
 	fallbackAnime := anime
@@ -852,31 +744,7 @@ func ResolveEpisodeURLForPlayback(config CurdConfig, anime *Anime, epNo int) (Pr
 	return fallbackResult, nil
 }
 
-func configForProviderUpdate(config CurdConfig) *CurdConfig {
-	if globalConfig := GetGlobalConfig(); globalConfig != nil && globalConfig.Provider == config.Provider {
-		return globalConfig
-	}
-	return &config
-}
 
-func promptAnimepaheEpisodeFallbackConsent(mode string, epNo int) (bool, bool, error) {
-	CurdOut(fmt.Sprintf("No %s stream was found on Mkissa for episode %d. Animepahe may require downloading a Chromium browser for DDoS-Guard verification (~500 MB). Use Animepahe fallback?", normalizeTranslationType(mode), epNo))
-	selected, err := DynamicSelect([]SelectionOption{
-		{Key: "use", Label: "Use Animepahe fallback"},
-		{Key: "never", Label: "Do not use Animepahe"},
-	})
-	if err != nil {
-		return false, false, err
-	}
-	switch selected.Key {
-	case "use":
-		return true, false, nil
-	case "never":
-		return false, true, nil
-	default:
-		return false, false, nil
-	}
-}
 
 func animeSearchTitle(anime *Anime) string {
 	if anime == nil {

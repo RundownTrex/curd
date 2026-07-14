@@ -23,6 +23,9 @@ func resolveMegaplayStream(videoLink, mode string) (string, string, error) {
 
 	embedID, linkMode, err := parseVideoLink(videoLink)
 	if err != nil {
+		if strings.HasPrefix(videoLink, "http://") || strings.HasPrefix(videoLink, "https://") {
+			return "", "", fmt.Errorf("anipub returned an unsupported external embed (%s) which is currently unplayable. Please use a fallback provider", videoLink)
+		}
 		return "", "", err
 	}
 	mode = providers.NormalizeTranslationType(mode)
