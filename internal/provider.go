@@ -861,17 +861,83 @@ func findProviderIDForAnime(provider Provider, anime *Anime, mode string) (strin
 		return "", fmt.Errorf("cannot search %s without an anime title", provider.Name())
 	}
 
-	options, err := provider.SearchAnime(query, mode)
-	if err != nil {
-		return "", err
-	}
-	option, ok := selectBestProviderSearchResult(options, anime, query)
-	if !ok {
-		return "", fmt.Errorf("no %s search results for %q", provider.Name(), query)
+	// Build a list of title candidates to try in order. Many providers (e.g.
+	// senshi) index anime by their Japanese/romaji title and won't match an
+	// English title like "Saga of Tanya the Evil Season 2", but will immediately
+	// find "Youjo Senki II". We try the cached romaji/Japanese titles first, then
+	// fall back to a live AniList lookup when the cached titles are identical to
+	// the primary query (which happens when only the English title was stored).
+	buildQueries := func(t AnimeTitle) []string {
+		seen := map[string]struct{}{query: {}}
+		qs := []string{query}
+		for _, candidate := range []string{t.Romaji, t.Japanese, t.English} {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "" {
+				continue
+			}
+			if _, exists := seen[candidate]; !exists {
+				seen[candidate] = struct{}{}
+				qs = append(qs, candidate)
+			}
+		}
+		return qs
 	}
 
-	Log(fmt.Sprintf("Mapped %q to provider %s id %s for %s fallback", query, provider.Name(), option.Key, mode))
-	return option.Key, nil
+	tryQueries := func(qs []string) (string, bool) {
+		for _, q := range qs {
+			options, err := provider.SearchAnime(q, mode)
+			if err != nil || len(options) == 0 {
+				if err != nil {
+					Log(fmt.Sprintf("Provider %s search failed for %q: %v", provider.Name(), q, err))
+				}
+				continue
+			}
+			option, ok := selectBestProviderSearchResult(options, anime, q)
+			if !ok {
+				continue
+			}
+			Log(fmt.Sprintf("Mapped %q (via query %q) to provider %s id %s for %s", animeSearchTitle(anime), q, provider.Name(), option.Key, mode))
+			return option.Key, true
+		}
+		return "", false
+	}
+
+	// First pass: use cached titles from the anime struct.
+	if anime != nil {
+		if id, ok := tryQueries(buildQueries(anime.Title)); ok {
+			return id, nil
+		}
+	} else {
+		if id, ok := tryQueries([]string{query}); ok {
+			return id, nil
+		}
+	}
+
+	// Second pass: all cached titles failed. Try to get the real romaji/native
+	// titles from AniList and retry. This handles the common case where only the
+	// English display name is stored (e.g. "Saga of Tanya the Evil Season 2")
+	// but the provider indexes by romaji ("Youjo Senki II").
+	var freshTitles AnimeTitle
+	var fetchErr error
+	if anime != nil && anime.AnilistId > 0 {
+		Log(fmt.Sprintf("All cached title queries failed for %q; fetching titles from AniList id %d", query, anime.AnilistId))
+		freshTitles, fetchErr = FetchAniListTitles(anime.AnilistId)
+	} else {
+		Log(fmt.Sprintf("All cached title queries failed for %q; searching AniList by title", query))
+		freshTitles, fetchErr = SearchAniListTitles(query)
+	}
+	if fetchErr == nil {
+		if id, ok := tryQueries(buildQueries(freshTitles)); ok {
+			if anime != nil {
+				anime.Title = freshTitles
+			}
+			return id, nil
+		}
+	} else {
+		Log(fmt.Sprintf("AniList title lookup failed for %q: %v", query, fetchErr))
+	}
+
+	return "", fmt.Errorf("no results for %q", query)
 }
 
 func audioFallbackPrompt(preferredMode, fallbackMode string) string {

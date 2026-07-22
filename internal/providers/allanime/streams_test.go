@@ -35,7 +35,7 @@ func TestGetLinksFromEncodedSourceUrlsSkipsUnreliableFast4speed(t *testing.T) {
 	}
 }
 
-func TestGetLinksFromEncodedSourceUrlsRequiresEncodedProviders(t *testing.T) {
+func TestGetLinksFromEncodedSourceUrlsUsesDirectSource(t *testing.T) {
 	t.Parallel()
 
 	sourceUrls := []allanimeSource{
@@ -46,9 +46,38 @@ func TestGetLinksFromEncodedSourceUrlsRequiresEncodedProviders(t *testing.T) {
 		},
 	}
 
-	_, _, err := getLinksFromEncodedSourceUrls(sourceUrls)
-	if err == nil {
-		t.Fatal("expected error when no encoded provider sources exist")
+	links, _, err := getLinksFromEncodedSourceUrls(sourceUrls)
+	if err != nil {
+		t.Fatalf("getLinksFromEncodedSourceUrls() error = %v", err)
+	}
+	if len(links) != 1 || links[0] != sourceUrls[0].SourceUrl {
+		t.Fatalf("getLinksFromEncodedSourceUrls() = %#v, want direct source %q", links, sourceUrls[0].SourceUrl)
+	}
+}
+
+func TestAllanimeClockURLKeepsCurrentDefaultEndpoint(t *testing.T) {
+	t.Parallel()
+
+	got, err := allanimeClockURL("/apivtwo/clock.json?id=default-source")
+	if err != nil {
+		t.Fatalf("allanimeClockURL() error = %v", err)
+	}
+	want := "https://allanime.day/apivtwo/clock.json?id=default-source"
+	if got != want {
+		t.Fatalf("allanimeClockURL() = %q, want %q", got, want)
+	}
+}
+
+func TestAllanimeClockURLUpgradesLegacyEndpoint(t *testing.T) {
+	t.Parallel()
+
+	got, err := allanimeClockURL("/apivtwo/clock?id=legacy-source")
+	if err != nil {
+		t.Fatalf("allanimeClockURL() error = %v", err)
+	}
+	want := "https://allanime.day/apivtwo/clock.json?id=legacy-source"
+	if got != want {
+		t.Fatalf("allanimeClockURL() = %q, want %q", got, want)
 	}
 }
 

@@ -36,6 +36,8 @@ func fetchJSON(rawURL, referer string, dest any) error {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
+	// megaplay.buzz/stream/getSources now requires AJAX requests only.
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 	resp, err := curdhost.HTTPClient().Do(req)
 	if err != nil {

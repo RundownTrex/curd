@@ -926,3 +926,133 @@ func GetAnimeDataByID(id int, token string) (Anime, error) {
 
 	return anime, nil
 }
+
+// FetchAniListTitles retrieves the english, romaji, and native titles for an
+// anime from the public AniList GraphQL API using its AniList media ID.
+// No auth token is required. Returns an error if the lookup fails or if the
+// ID is not found.
+func FetchAniListTitles(anilistID int) (AnimeTitle, error) {
+	if anilistID <= 0 {
+		return AnimeTitle{}, fmt.Errorf("invalid anilist id %d", anilistID)
+	}
+
+	query := `query ($id: Int) { Media(id: $id, type: ANIME) { title { english romaji native } } }`
+	variables := map[string]interface{}{"id": anilistID}
+
+	body, err := json.Marshal(map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	})
+	if err != nil {
+		return AnimeTitle{}, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "https://graphql.anilist.co", bytes.NewReader(body))
+	if err != nil {
+		return AnimeTitle{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := sharedHTTPClient.Do(req)
+	if err != nil {
+		return AnimeTitle{}, err
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return AnimeTitle{}, err
+	}
+
+	var result struct {
+		Data struct {
+			Media *struct {
+				Title struct {
+					English string `json:"english"`
+					Romaji  string `json:"romaji"`
+					Native  string `json:"native"`
+				} `json:"title"`
+			} `json:"Media"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return AnimeTitle{}, fmt.Errorf("parse anilist title response: %w", err)
+	}
+	if result.Data.Media == nil {
+		return AnimeTitle{}, fmt.Errorf("anilist media id %d not found", anilistID)
+	}
+
+	t := result.Data.Media.Title
+	return AnimeTitle{
+		English:  t.English,
+		Romaji:   t.Romaji,
+		Japanese: t.Native,
+	}, nil
+}
+
+// SearchAniListTitles searches the public AniList GraphQL API for an anime by
+// title and returns the first result's english/romaji/native title fields.
+// No auth token is required.
+func SearchAniListTitles(query string) (AnimeTitle, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return AnimeTitle{}, fmt.Errorf("empty search query")
+	}
+
+	gql := `query ($search: String) { Page(page:1,perPage:1) { media(search:$search,type:ANIME,sort:SEARCH_MATCH) { title { english romaji native } } } }`
+	variables := map[string]interface{}{"search": query}
+
+	body, err := json.Marshal(map[string]interface{}{
+		"query":     gql,
+		"variables": variables,
+	})
+	if err != nil {
+		return AnimeTitle{}, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "https://graphql.anilist.co", bytes.NewReader(body))
+	if err != nil {
+		return AnimeTitle{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := sharedHTTPClient.Do(req)
+	if err != nil {
+		return AnimeTitle{}, err
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return AnimeTitle{}, err
+	}
+
+	var result struct {
+		Data struct {
+			Page struct {
+				Media []struct {
+					Title struct {
+						English string `json:"english"`
+						Romaji  string `json:"romaji"`
+						Native  string `json:"native"`
+					} `json:"title"`
+				} `json:"media"`
+			} `json:"Page"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return AnimeTitle{}, fmt.Errorf("parse anilist search response: %w", err)
+	}
+	if len(result.Data.Page.Media) == 0 {
+		return AnimeTitle{}, fmt.Errorf("no anilist results for %q", query)
+	}
+
+	t := result.Data.Page.Media[0].Title
+	return AnimeTitle{
+		English:  t.English,
+		Romaji:   t.Romaji,
+		Japanese: t.Native,
+	}, nil
+}

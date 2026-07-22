@@ -443,6 +443,7 @@ func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, er
 	if err := json.Unmarshal(body, &response); err != nil {
 		curdhost.Log(fmt.Sprint("Error parsing persisted query JSON: ", err))
 	}
+	logAllanimeEpisodeResponse("persisted query", id, mode, epNo, body, response)
 
 	useFallback := response.Data.Tobeparsed == "" && len(response.Data.Episode.SourceUrls) == 0
 	if !useFallback && response.Data.Tobeparsed == "" && !strings.Contains(string(body), "tobeparsed") {
@@ -488,6 +489,7 @@ func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, er
 			curdhost.Log(fmt.Sprint("Error parsing fallback JSON: ", err))
 			return nil, err
 		}
+		logAllanimeEpisodeResponse("fallback query", id, mode, epNo, body, response)
 	}
 
 	if response.Data.Tobeparsed != "" {
@@ -501,7 +503,19 @@ func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, er
 		return decodedSources, nil
 	}
 
+	logAllanime(fmt.Sprintf("Allanime episode returned %d source URL(s)", len(response.Data.Episode.SourceUrls)))
 	return response.Data.Episode.SourceUrls, nil
+}
+
+func logAllanimeEpisodeResponse(stage, showID, mode string, epNo int, body []byte, response allanimeResponse) {
+	if response.Data.Tobeparsed != "" || len(response.Data.Episode.SourceUrls) > 0 {
+		return
+	}
+	snippet := strings.TrimSpace(string(body))
+	if len(snippet) > 500 {
+		snippet = snippet[:500] + "…"
+	}
+	logAllanime(fmt.Sprintf("Allanime %s returned no sources for show=%q mode=%q episode=%d; response=%s", stage, showID, providers.NormalizeTranslationType(mode), epNo, snippet))
 }
 
 func getEpisodeURLForMode(id, mode string, epNo int) ([]string, error) {

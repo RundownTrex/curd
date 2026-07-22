@@ -27,8 +27,8 @@ type allanimeResolvedStream struct {
 }
 
 var (
-	allanimeClockRefererPattern = regexp.MustCompile(`"Referer":"([^"]+)"`)
-	allanimeClockSubtitlePattern = regexp.MustCompile(`"subtitles":\[\{"lang":"en","label":"English","default":"default","src":"([^"]+)"`)
+	allanimeClockRefererPattern     = regexp.MustCompile(`"Referer":"([^"]+)"`)
+	allanimeClockSubtitlePattern    = regexp.MustCompile(`"subtitles":\[\{"lang":"en","label":"English","default":"default","src":"([^"]+)"`)
 	allanimeStreamResolutionPattern = regexp.MustCompile(`RESOLUTION=(\d+)x(\d+)`)
 	allanimeStreamBandwidthPattern  = regexp.MustCompile(`BANDWIDTH=(\d+)`)
 )
@@ -48,28 +48,22 @@ func getLinksFromEncodedSourceUrls(sourceUrls []allanimeSource) ([]string, map[s
 		url   string
 	}
 
-	for _, s := range sourceUrls {
-		curdhost.Log("DEBUG SOURCE FOUND: " + s.SourceName)
-	}
-
-	jobs := make([]providerJob, 0)
-	for _, providerName := range allanimeNamedProviders {
-		source, ok := findNamedAllanimeSource(sourceUrls, providerName)
+	jobs := make([]providerJob, 0, len(sourceUrls))
+	for _, source := range sortAllanimeSourcesByPriority(sourceUrls) {
+		sourceURL, ok := usableAllanimeSourceURL(source)
 		if !ok {
+			logAllanime(fmt.Sprintf("Skipping Allanime source name=%q priority=%.1f url=%s", source.SourceName, source.Priority, allanimeSourceURLShape(source.SourceUrl)))
 			continue
 		}
-		sourceURL := strings.TrimSpace(source.SourceUrl)
-		if !strings.HasPrefix(sourceURL, "--") && !strings.HasPrefix(sourceURL, "http://") && !strings.HasPrefix(sourceURL, "https://") {
-			continue
-		}
+		logAllanime(fmt.Sprintf("Using Allanime source name=%q priority=%.1f url=%s", source.SourceName, source.Priority, allanimeSourceURLShape(sourceURL)))
 		jobs = append(jobs, providerJob{
 			index: len(jobs),
-			name:  providerName,
+			name:  strings.TrimSpace(source.SourceName),
 			url:   sourceURL,
 		})
 	}
 	if len(jobs) == 0 {
-		return nil, nil, fmt.Errorf("no encoded Allanime provider sources found")
+		return nil, nil, fmt.Errorf("no usable Allanime provider sources found")
 	}
 
 	type streamResult struct {
@@ -90,7 +84,7 @@ func getLinksFromEncodedSourceUrls(sourceUrls []allanimeSource) ([]string, map[s
 			} else {
 				decodedProviderID = encodedURL
 			}
-			curdhost.Log(fmt.Sprintf("Fetching Allanime provider %s via %s", providerName, decodedProviderID))
+			logAllanime(fmt.Sprintf("Fetching Allanime provider %s via %s", providerName, decodedProviderID))
 			streams, err := resolveAllanimeClockProvider(providerName, decodedProviderID)
 			results <- streamResult{index: idx, streams: streams, err: err}
 		}(job.index, job.name, job.url)
@@ -114,14 +108,14 @@ func getLinksFromEncodedSourceUrls(sourceUrls []allanimeSource) ([]string, map[s
 			}
 			completedCount++
 			if res.err != nil {
-				curdhost.Log(fmt.Sprintf("Allanime provider %s failed: %v", jobs[res.index].name, res.err))
+				logAllanime(fmt.Sprintf("Allanime provider %s failed: %v", jobs[res.index].name, res.err))
 				collectedErrors = append(collectedErrors, fmt.Errorf("%s: %w", jobs[res.index].name, res.err))
 				continue
 			}
 			if len(res.streams) > 0 {
 				orderedStreams[res.index] = res.streams
 				successCount++
-				curdhost.Log(fmt.Sprintf("Allanime provider %s returned %d stream(s)", jobs[res.index].name, len(res.streams)))
+				logAllanime(fmt.Sprintf("Allanime provider %s returned %d stream(s)", jobs[res.index].name, len(res.streams)))
 			}
 		case <-timeout:
 			if successCount > 0 {
@@ -135,6 +129,54 @@ func getLinksFromEncodedSourceUrls(sourceUrls []allanimeSource) ([]string, map[s
 		return nil, nil, fmt.Errorf("no valid links found from Allanime providers: %v", collectedErrors)
 	}
 	return buildAllanimeLinkResult(orderedStreams)
+}
+
+// usableAllanimeSourceURL accepts both legacy encoded sources and direct
+// streams. Mkissa's current Default source is often a direct HLS URL; the old
+// hard-coded source-name filter discarded it before it could be played.
+func usableAllanimeSourceURL(source allanimeSource) (string, bool) {
+	sourceURL := strings.TrimSpace(source.SourceUrl)
+	if strings.HasPrefix(sourceURL, "//") {
+		sourceURL = "https:" + sourceURL
+	}
+	if strings.HasPrefix(sourceURL, "--") {
+		return sourceURL, len(sourceURL) > 2
+	}
+	if isDirectPlayableAllanimeSource(allanimeSource{SourceUrl: sourceURL}) {
+		return sourceURL, true
+	}
+	return "", false
+}
+
+func logAllanime(message string) {
+	if curdhost.Log != nil {
+		curdhost.Log(message)
+	}
+}
+
+// allanimeSourceURLShape is useful in the debug log without writing signed
+// stream URLs (which can contain short-lived authorization tokens) to disk.
+func allanimeSourceURLShape(sourceURL string) string {
+	sourceURL = strings.TrimSpace(sourceURL)
+	switch {
+	case sourceURL == "":
+		return "empty"
+	case strings.HasPrefix(sourceURL, "--"):
+		return "encoded"
+	case strings.HasPrefix(sourceURL, "//"):
+		return "protocol-relative"
+	case strings.HasPrefix(sourceURL, "http://") || strings.HasPrefix(sourceURL, "https://"):
+		parsed, err := url.Parse(sourceURL)
+		if err != nil {
+			return "invalid-url"
+		}
+		return "url host=" + parsed.Host + " path=" + parsed.Path
+	default:
+		if len(sourceURL) > 40 {
+			sourceURL = sourceURL[:40] + "…"
+		}
+		return "unsupported value=" + strconv.Quote(sourceURL)
+	}
 }
 
 func buildAllanimeLinkResult(orderedStreams [][]allanimeResolvedStream) ([]string, map[string]providers.StreamPlaybackHint, error) {
@@ -259,7 +301,10 @@ func resolveAllanimeClockProvider(providerName, providerPath string) ([]allanime
 }
 
 func fetchAllanimeClockResponse(providerPath string) ([]byte, map[string]interface{}, error) {
-	requestURL := "https://allanime.day" + strings.ReplaceAll(providerPath, "/clock", "/clock.json")
+	requestURL, err := allanimeClockURL(providerPath)
+	if err != nil {
+		return nil, nil, err
+	}
 	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
 		return nil, nil, err
@@ -286,6 +331,35 @@ func fetchAllanimeClockResponse(providerPath string) ([]byte, map[string]interfa
 		return nil, nil, fmt.Errorf("failed to parse Allanime extractor JSON: %w", err)
 	}
 	return body, videoData, nil
+}
+
+// allanimeClockURL builds the extractor URL from an encoded Allanime source.
+// Older source entries end in /clock, while current Default entries already
+// contain /clock.json.  Rewriting both forms unconditionally turns the latter
+// into clock.json.json and makes a perfectly valid Default source unusable.
+func allanimeClockURL(providerPath string) (string, error) {
+	providerPath = normalizeAllanimeProviderPath(strings.TrimSpace(providerPath))
+	if providerPath == "" {
+		return "", fmt.Errorf("empty Allanime extractor path")
+	}
+
+	parsed, err := url.Parse(providerPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid Allanime extractor path: %w", err)
+	}
+	if parsed.IsAbs() {
+		return parsed.String(), nil
+	}
+
+	// Only convert the legacy endpoint. strings.ReplaceAll would also mutate
+	// the already-current /clock.json endpoint to /clock.json.json.
+	if strings.HasSuffix(parsed.Path, "/clock") {
+		parsed.Path += ".json"
+	}
+	if !strings.HasPrefix(parsed.Path, "/") {
+		parsed.Path = "/" + parsed.Path
+	}
+	return "https://allanime.day" + parsed.String(), nil
 }
 
 func resolveAllanimeLinkURL(linkURL, referrer, subtitleURL string, resolutionScore int) []allanimeResolvedStream {

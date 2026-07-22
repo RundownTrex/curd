@@ -42,3 +42,7 @@ The `SelectionOption` struct returned by `SearchAnime` is critical for tracking.
 ## 9. Error Wrapping & Graceful Degradation
 Do not `panic` anywhere in the provider code. Providers are just plugins to the main `curd` loop.
 - **Rule**: Always wrap errors with context (e.g., `fmt.Errorf("parse anipub response: %w", err)`). If a provider fails, `curd` will log the wrapped error and automatically degrade to the next provider. Panics will crash the entire application and ruin the user experience.
+
+## 10. Temporary/Scratch Files (No Test Scripts in Workspace)
+Do not create temporary test scripts (e.g. `test_sub.go`) or scratch files directly within the version-controlled workspace. This causes dirty git states and accidental commits to GitHub.
+- **Rule**: If you need to run one-off test scripts to verify logic or API responses, always create them OUTSIDE the main project folder. Use `/tmp/` or the designated artifacts `scratch/` directory. Never pollute the workspace root with temporary files.
