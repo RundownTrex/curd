@@ -48,7 +48,13 @@ func getEpisodeStreamsForMode(malIDStr string, config providers.PlaybackConfig, 
 		return nil, nil, fmt.Errorf("megaplay stream url missing for mal %d ep %d", malID, epNo)
 	}
 
-	// Step 5: Pick the best subtitle track.
+	// Step 5: Validate the HLS stream — megaplay CDN has been observed injecting
+	// PNG ad segments into sub-playlists that cause mpv to open with no video.
+	if err := validateHLSStream(streamURL); err != nil {
+		return nil, nil, err
+	}
+
+	// Step 6: Pick the best subtitle track.
 	subtitle := pickSubtitleTrack(payload, mode)
 
 	hints := map[string]providers.StreamPlaybackHint{
