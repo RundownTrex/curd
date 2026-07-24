@@ -69,6 +69,7 @@ type NextEpisode struct {
 	ProviderName string
 	ProviderId   string
 	Mode         string
+	LinkHints    map[string]StreamPlaybackHint
 }
 
 // StreamPlaybackHint carries MPV playback metadata for a resolved stream URL.

@@ -1232,12 +1232,11 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 
 	if (anime.Ep.NextEpisode.Number == anime.Ep.Number) && (len(anime.Ep.NextEpisode.Links) > 0) {
 		anime.Ep.Links = anime.Ep.NextEpisode.Links
-		anime.Ep.StreamReferrer = ""
-		anime.Ep.SubtitleURL = ""
 		if anime.Ep.NextEpisode.ProviderName != "" {
 			anime.ProviderName = anime.Ep.NextEpisode.ProviderName
 			anime.ProviderId = anime.Ep.NextEpisode.ProviderId
 		}
+		applyStreamPlaybackHints(anime, anime.Ep.Links, anime.Ep.NextEpisode.LinkHints)
 	} else {
 		// Get episode link
 		episodeResult, err := ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
@@ -1349,6 +1348,7 @@ episodeLinksReady:
 					ProviderName: nextResult.ProviderName,
 					ProviderId:   nextResult.ProviderID,
 					Mode:         nextResult.Mode,
+					LinkHints:    nextResult.LinkHints,
 				}
 			}
 		} else {
@@ -1693,6 +1693,7 @@ func NextEpisodePromptContinuous(userCurdConfig *CurdConfig, databaseFile string
 			// Use prefetched links if available for the next episode
 			if (anime.Ep.NextEpisode.Number == anime.Ep.Number) && (len(anime.Ep.NextEpisode.Links) > 0) {
 				anime.Ep.Links = anime.Ep.NextEpisode.Links
+				applyStreamPlaybackHints(anime, anime.Ep.Links, anime.Ep.NextEpisode.LinkHints)
 				Log(fmt.Sprintf("Using prefetched links for episode %d", anime.Ep.Number))
 			} else {
 				// Clear links to force fetching new ones
@@ -1794,6 +1795,7 @@ func StartNextEpisode(anime *Anime, userCurdConfig *CurdConfig, databaseFile str
 	// Use prefetched links if available for the next episode
 	if (anime.Ep.NextEpisode.Number == anime.Ep.Number) && (len(anime.Ep.NextEpisode.Links) > 0) {
 		anime.Ep.Links = anime.Ep.NextEpisode.Links
+		applyStreamPlaybackHints(anime, anime.Ep.Links, anime.Ep.NextEpisode.LinkHints)
 		Log(fmt.Sprintf("Using prefetched links for episode %d", anime.Ep.Number))
 	} else {
 		// Clear links to force fetching new ones

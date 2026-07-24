@@ -325,14 +325,16 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 		}
 
 		// Wait a brief moment for the file to load
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		// Also load the external subtitle for this episode if available
 		if subtitleURL := strings.TrimSpace(anime.Ep.SubtitleURL); subtitleURL != "" {
-			subCommand := []interface{}{"sub-add", subtitleURL}
+			subCommand := []interface{}{"sub-add", subtitleURL, "select"}
 			_, subErr := MPVSendCommand(mpvSocketPath, subCommand)
 			if subErr != nil {
 				Log(fmt.Sprintf("Failed to load subtitle for next episode: %v", subErr))
+			} else {
+				_, _ = MPVSendCommand(mpvSocketPath, []interface{}{"set_property", "sub-visibility", true})
 			}
 		}
 
