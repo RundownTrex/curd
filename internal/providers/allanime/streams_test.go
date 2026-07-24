@@ -99,3 +99,41 @@ func TestResolveAllanimeRelativeURL(t *testing.T) {
 		t.Fatalf("resolveAllanimeRelativeURL() = %q, want %q", got, want)
 	}
 }
+
+func TestGetAAReqAndDecryptTobeparsed(t *testing.T) {
+	t.Parallel()
+
+	testKeyHex := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	epoch := 6885
+	queryHash := "f4662f4b7510b26795dd53ef824a0bf1740fbbc5d1273fab18222ac831bca8d0"
+
+	aaReq, err := getAAReq(epoch, testKeyHex, queryHash)
+	if err != nil {
+		t.Fatalf("getAAReq() unexpected error = %v", err)
+	}
+	if aaReq == "" {
+		t.Fatal("getAAReq() returned empty string")
+	}
+}
+
+func TestLiveFetchMkissaSources(t *testing.T) {
+	sources, err := fetchAllanimeEpisodeSources("ReooPAxPMsHM4KPMY", "sub", 1)
+	if err != nil {
+		t.Fatalf("fetchAllanimeEpisodeSources() failed: %v", err)
+	}
+	if len(sources) == 0 {
+		t.Fatal("fetchAllanimeEpisodeSources() returned 0 sources")
+	}
+	t.Logf("Fetched %d mkissa sources successfully!", len(sources))
+}
+
+func TestLiveFetchMkissaStreams(t *testing.T) {
+	links, hints, err := getAllanimeEpisodeStreamsForMode("ReooPAxPMsHM4KPMY", "sub", 1)
+	if err != nil {
+		t.Fatalf("getAllanimeEpisodeStreamsForMode() failed: %v", err)
+	}
+	if len(links) == 0 {
+		t.Fatal("getAllanimeEpisodeStreamsForMode() returned 0 links")
+	}
+	t.Logf("Fetched %d playable stream links! First link: %s (referrer: %s)", len(links), links[0], hints[links[0]].Referrer)
+}

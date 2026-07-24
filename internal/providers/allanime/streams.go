@@ -312,7 +312,7 @@ func fetchAllanimeClockResponse(providerPath string) ([]byte, map[string]interfa
 	req.Header.Set("Referer", allanimeGraphQLReferer)
 	req.Header.Set("User-Agent", allanimeUserAgent)
 
-	resp, err := curdhost.HTTPClient().Do(req)
+	resp, err := httpClient().Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -402,7 +402,7 @@ func fetchAllanimeM3U8VariantStreams(masterURL, referrer, subtitleURL string) ([
 	req.Header.Set("Referer", referrer)
 	req.Header.Set("User-Agent", allanimeUserAgent)
 
-	resp, err := curdhost.HTTPClient().Do(req)
+	resp, err := httpClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

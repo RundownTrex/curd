@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -50,8 +48,8 @@ type filemoonResponse struct {
 	KeyParts []string `json:"key_parts"`
 }
 
-func decodeTobeparsed(blob string) ([]allanimeSource, error) {
-	plain, err := decryptTobeparsedPlain(blob)
+func decodeTobeparsed(blob string, keyHex string) ([]allanimeSource, error) {
+	plain, err := decryptTobeparsed(blob, keyHex)
 	if err != nil {
 		return nil, err
 	}
@@ -66,41 +64,6 @@ func decodeTobeparsed(blob string) ([]allanimeSource, error) {
 	}
 
 	return payload.Episode.SourceUrls, nil
-}
-
-func decryptTobeparsedPlain(blob string) ([]byte, error) {
-	key := []byte("Xot36i3lK3:v1")
-	hash := sha256.Sum256(key)
-
-	data, err := base64.StdEncoding.DecodeString(blob)
-	if err != nil {
-		return nil, fmt.Errorf("error decoding base64: %w", err)
-	}
-
-	if len(data) < 29 {
-		return nil, fmt.Errorf("data too short to contain tobeparsed payload")
-	}
-
-	iv := data[1:13]
-	ctLen := len(data) - 13 - 16
-	if ctLen <= 0 {
-		return nil, fmt.Errorf("ciphertext length is invalid in tobeparsed payload")
-	}
-	ct := data[13 : 13+ctLen]
-
-	ctrIV := make([]byte, 16)
-	copy(ctrIV, iv)
-	binary.BigEndian.PutUint32(ctrIV[12:], uint32(2))
-
-	block, err := aes.NewCipher(hash[:])
-	if err != nil {
-		return nil, fmt.Errorf("error creating cipher: %w", err)
-	}
-
-	stream := cipher.NewCTR(block, ctrIV)
-	plain := make([]byte, len(ct))
-	stream.XORKeyStream(plain, ct)
-	return plain, nil
 }
 
 func decodeProviderID(encoded string) string {
@@ -149,7 +112,7 @@ var allanimeNamedProviders = []string{
 }
 
 const (
-	allanimePersistedQueryReferer = "https://youtu-chan.com"
+	allanimePersistedQueryReferer = "https://mkissa.to"
 	allanimeGraphQLReferer        = "https://mkissa.to"
 )
 
@@ -387,9 +350,15 @@ func fetchAllanimeEpisodeSources(id, mode string, epNo int) ([]allanimeSource, e
 }
 
 func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, error) {
-	const (
-		episodeQueryHash = "d405d0edd690624b66baba3068e0edc3ac90f1597d898a1ec8db4e5c43c00fec"
-	)
+	keys, err := getAllanimeKeys()
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch allanime keys: %w", err)
+	}
+
+	aaReq, err := getAAReq(keys.Epoch, keys.Key, allanimeQueryHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate aaReq: %w", err)
+	}
 
 	episodeEmbedGQL := `query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls }}`
 
@@ -402,8 +371,9 @@ func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, er
 	extensions := map[string]interface{}{
 		"persistedQuery": map[string]interface{}{
 			"version":    1,
-			"sha256Hash": episodeQueryHash,
+			"sha256Hash": allanimeQueryHash,
 		},
+		"aaReq": aaReq,
 	}
 
 	variablesJSON, err := json.Marshal(variables)
@@ -416,17 +386,17 @@ func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, er
 		return nil, fmt.Errorf("failed to marshal persisted query extensions: %w", err)
 	}
 
-	persistedURL := "https://api.allanime.day/api?variables=" + url.QueryEscape(string(variablesJSON)) + "&extensions=" + url.QueryEscape(string(extensionsJSON))
+	persistedURL := allanimeAPI + "?variables=" + url.QueryEscape(string(variablesJSON)) + "&extensions=" + url.QueryEscape(string(extensionsJSON))
 
 	req, err := http.NewRequest("GET", persistedURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create persisted query request: %w", err)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
-	req.Header.Set("Referer", allanimePersistedQueryReferer)
-	req.Header.Set("Origin", allanimePersistedQueryReferer)
+	req.Header.Set("User-Agent", allanimeAgent)
+	req.Header.Set("Referer", allanimeGraphQLReferer)
+	req.Header.Set("Origin", allanimeGraphQLReferer)
 
-	resp, err := curdhost.HTTPClient().Do(req)
+	resp, err := httpClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send persisted query request: %w", err)
 	}
@@ -441,7 +411,7 @@ func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, er
 
 	var response allanimeResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		curdhost.Log(fmt.Sprint("Error parsing persisted query JSON: ", err))
+		logAllanime(fmt.Sprint("Error parsing persisted query JSON: ", err))
 	}
 	logAllanimeEpisodeResponse("persisted query", id, mode, epNo, body, response)
 
@@ -461,17 +431,17 @@ func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, er
 			return nil, fmt.Errorf("failed to marshal request body: %w", err)
 		}
 
-		req, err := http.NewRequest("POST", "https://api.allanime.day/api", bytes.NewBuffer(requestBody))
+		req, err := http.NewRequest("POST", allanimeAPI, bytes.NewBuffer(requestBody))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
 
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
+		req.Header.Set("User-Agent", allanimeAgent)
 		req.Header.Set("Referer", allanimeGraphQLReferer)
 		req.Header.Set("Origin", allanimeGraphQLReferer)
 
-		resp, err := curdhost.HTTPClient().Do(req)
+		resp, err := httpClient().Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to send request: %w", err)
 		}
@@ -486,20 +456,21 @@ func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, er
 		}
 
 		if err := json.Unmarshal(body, &response); err != nil {
-			curdhost.Log(fmt.Sprint("Error parsing fallback JSON: ", err))
+			logAllanime(fmt.Sprint("Error parsing fallback JSON: ", err))
 			return nil, err
 		}
 		logAllanimeEpisodeResponse("fallback query", id, mode, epNo, body, response)
 	}
 
 	if response.Data.Tobeparsed != "" {
-		curdhost.Log("Found tobeparsed field, decoding source URLs")
-		decodedSources, err := decodeTobeparsed(response.Data.Tobeparsed)
+		logAllanime("Found tobeparsed field, decoding source URLs")
+		decodedSources, err := decodeTobeparsed(response.Data.Tobeparsed, keys.Key)
 		if err != nil {
+			invalidateAllanimeKeys()
 			return nil, err
 		}
 
-		curdhost.Log(fmt.Sprintf("Decoded %d Allanime source URLs from tobeparsed payload", len(decodedSources)))
+		logAllanime(fmt.Sprintf("Decoded %d Allanime source URLs from tobeparsed payload", len(decodedSources)))
 		return decodedSources, nil
 	}
 

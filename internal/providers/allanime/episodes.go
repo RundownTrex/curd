@@ -50,7 +50,7 @@ func getAllAnimeEpisodesList(showID, mode string) ([]string, error) {
 	}
 
 	// Make the HTTP POST request
-	req, err := http.NewRequest("POST", "https://api.allanime.day/api", bytes.NewBuffer(requestBody))
+	req, err := http.NewRequest("POST", "https://api.mkissa.net/api", bytes.NewBuffer(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -59,7 +59,7 @@ func getAllAnimeEpisodesList(showID, mode string) ([]string, error) {
 	req.Header.Set("Referer", "https://mkissa.to")
 	req.Header.Set("Origin", "https://mkissa.to")
 
-	resp, err := curdhost.HTTPClient().Do(req)
+	resp, err := httpClient().Do(req)
 	if err != nil {
 		curdhost.Log(fmt.Sprint("Error making HTTP request:", err))
 		return nil, err

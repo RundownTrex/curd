@@ -52,7 +52,7 @@ func searchAnimeByMode(query, mode, preferredMode string) ([]providers.Selection
 		agent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0"
 		allanimeRef  = "https://mkissa.to"
 		allanimeBase = "allanime.day"
-		allanimeAPI  = "https://api." + allanimeBase + "/api"
+		allanimeAPI  = "https://api.mkissa.net/api"
 	)
 
 	mode = providers.NormalizeTranslationType(mode)
@@ -107,7 +107,7 @@ func searchAnimeByMode(query, mode, preferredMode string) ([]providers.Selection
 	req.Header.Set("Referer", allanimeRef)
 	req.Header.Set("Origin", allanimeRef)
 
-	resp, err := curdhost.HTTPClient().Do(req)
+	resp, err := httpClient().Do(req)
 	if err != nil {
 		curdhost.Log(fmt.Sprintf("Error making HTTP request: %v", err))
 		return animeList, err
