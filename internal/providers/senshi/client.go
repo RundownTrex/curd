@@ -2,11 +2,14 @@ package senshi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/wraient/curd/internal/curdhost"
 )
@@ -14,6 +17,25 @@ import (
 const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
 var baseURL = "https://senshi.live"
+
+var senshiHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext(ctx, "tcp4", addr)
+		},
+	},
+}
+
+func httpClient() *http.Client {
+	if client := curdhost.HTTPClient(); client != nil {
+		return client
+	}
+	return senshiHTTPClient
+}
 
 func newRequest(method, rawURL string) (*http.Request, error) {
 	req, err := http.NewRequest(method, rawURL, nil)
@@ -45,7 +67,7 @@ func fetchJSON(method, rawURL string, payload any, dest any) error {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := curdhost.HTTPClient().Do(req)
+	resp, err := senshiHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}

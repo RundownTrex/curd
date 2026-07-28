@@ -57,7 +57,6 @@ func init() {
 		}
 		return "english"
 	}
-	curdhost.SetCookiesForAnimepahe = SetCookiesForAnimepahe
 }
 
 func normalizeTranslationType(mode string) string {
@@ -182,7 +181,7 @@ func unwrapProvider(provider Provider) providers.Provider {
 	return nil
 }
 
-func applyStreamPlaybackHints(anime *Anime, links []string, hints map[string]StreamPlaybackHint) {
+func ApplyStreamPlaybackHints(anime *Anime, links []string, hints map[string]StreamPlaybackHint) {
 	if anime == nil || len(links) == 0 {
 		return
 	}
@@ -195,3 +194,8 @@ func applyStreamPlaybackHints(anime *Anime, links []string, hints map[string]Str
 	anime.Ep.StreamReferrer = ""
 	anime.Ep.SubtitleURL = ""
 }
+
+func applyStreamPlaybackHints(anime *Anime, links []string, hints map[string]StreamPlaybackHint) {
+	ApplyStreamPlaybackHints(anime, links, hints)
+}
+

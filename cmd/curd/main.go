@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -396,6 +397,7 @@ func main() {
 					if anime.Ep.NextEpisode.Number == anime.Ep.Number && len(anime.Ep.NextEpisode.Links) > 0 && anime.Ep.NextEpisode.ProviderName == anime.ProviderName {
 						internal.Log("Using prefetched next episode link")
 						anime.Ep.Links = anime.Ep.NextEpisode.Links
+						internal.ApplyStreamPlaybackHints(&anime, anime.Ep.Links, anime.Ep.NextEpisode.LinkHints)
 						break
 					}
 					time.Sleep(1 * time.Second)
@@ -410,7 +412,9 @@ func main() {
 						return
 					}
 					anime.Ep.Links = result.Links
+					internal.ApplyStreamPlaybackHints(&anime, anime.Ep.Links, result.LinkHints)
 				}
+
 
 				if len(anime.Ep.Links) == 0 {
 					internal.CurdOut("No episode links found. Try again later.")
@@ -743,7 +747,15 @@ func main() {
 								if err2 := internal.SendSkipTimesToMPV(&anime); err2 != nil {
 									internal.Log("Error sending skip times to MPV: " + err2.Error())
 								}
+								if subtitleURL := strings.TrimSpace(anime.Ep.SubtitleURL); subtitleURL != "" {
+									go func(socket, sub string) {
+										if err2 := internal.EnsureMPVSubtitle(socket, sub); err2 != nil {
+											internal.Log("Error ensuring MPV subtitle on start: " + err2.Error())
+										}
+									}(anime.Ep.Player.SocketPath, subtitleURL)
+								}
 							}
+
 
 							if anime.Ep.Resume {
 								internal.SeekMPV(anime.Ep.Player.SocketPath, anime.Ep.Player.PlaybackTime)

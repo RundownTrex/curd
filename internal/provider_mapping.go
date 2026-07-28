@@ -2,13 +2,9 @@ package internal
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
-
-	"github.com/wraient/curd/internal/providers/animepahe"
 )
 
 type ProviderMappingOutcome int
@@ -162,138 +158,6 @@ func autoMatchProviderListing(config *CurdConfig, anime *Anime, animeList []Sele
 		return true
 	}
 
-	if ProviderEnabled("animepahe") && ProviderStackContains(config, "animepahe") {
-		Log("Attempting deep metadata matching and exact AniList meta tag check for Animepahe...")
-
-		targetAnilistID := strconv.Itoa(anime.AnilistId)
-		var bestMatch *SelectionOption
-		var highestScore int
-
-		if anime.MalId == 0 {
-			anime.MalId, _ = GetAnimeMalID(anime.AnilistId)
-		}
-
-		var malData *JikanAnimeData
-		if anime.MalId != 0 {
-			malData, _ = FetchJikanAnimeData(anime.MalId)
-		}
-
-		for i := range animeList {
-			opt := &animeList[i]
-			optionProviderName, rawProviderID, ok := ParseProviderQualifiedID(opt.Key)
-			if ok {
-				if optionProviderName != "animepahe" {
-					continue
-				}
-			} else {
-				rawProviderID = opt.Key
-				if configuredProviderNames(config)[0] != "animepahe" {
-					continue
-				}
-			}
-			score := 0
-
-			if malData != nil && opt.ExtraData != nil {
-				if paheData, ok := opt.ExtraData.(animepahe.SearchItem); ok {
-					paheTitleLower := strings.ToLower(paheData.Title)
-					malTitleLower := strings.ToLower(malData.Title)
-					malTitleEngLower := strings.ToLower(malData.TitleEnglish)
-					malTitleJapLower := strings.ToLower(malData.TitleJapanese)
-
-					if paheTitleLower == malTitleLower || (malTitleEngLower != "" && paheTitleLower == malTitleEngLower) || (malTitleJapLower != "" && paheTitleLower == malTitleJapLower) {
-						score += 5
-					} else if strings.Contains(paheTitleLower, malTitleLower) || strings.Contains(malTitleLower, paheTitleLower) ||
-						(malTitleEngLower != "" && (strings.Contains(paheTitleLower, malTitleEngLower) || strings.Contains(malTitleEngLower, paheTitleLower))) {
-						score += 2
-					}
-
-					if paheData.Year > 0 && malData.Year > 0 && paheData.Year == malData.Year {
-						score += 3
-					}
-					if paheData.Season != "" && malData.Season != "" && strings.EqualFold(paheData.Season, malData.Season) {
-						score += 2
-					}
-					if paheData.Type != "" && malData.Type != "" && strings.EqualFold(paheData.Type, malData.Type) {
-						score += 2
-					}
-					if paheData.Episodes > 0 && malData.Episodes > 0 && paheData.Episodes == malData.Episodes {
-						score += 2
-					} else if (paheData.Episodes == 0 && malData.Status == "Currently Airing") || (malData.Episodes == 0 && paheData.Status == "Currently Airing") {
-						score += 2
-					}
-					if strings.EqualFold(paheData.Status, malData.Status) {
-						score += 1
-					}
-				}
-			} else if strings.Contains(strings.ToLower(opt.Title), strings.ToLower(string(userQuery))) {
-				score += 2
-			}
-
-			if score >= 2 || len(animeList) <= 3 {
-				animeRef := animepahe.ParseProviderID(rawProviderID)
-				if animeRef.Session == "" {
-					continue
-				}
-				animeUrl := fmt.Sprintf("https://animepahe.pw/anime/%s", animeRef.Session)
-				Log(fmt.Sprintf("Fetching %s to check exact AniList meta tag...", animeUrl))
-				req, err := animepahe.NewPageRequest(animeUrl)
-				if err != nil {
-					Log(fmt.Sprintf("Failed to build animepahe detail request %s: %v", animeUrl, err))
-					continue
-				}
-
-				resp, err := sharedHTTPClient.Do(req)
-				if err != nil {
-					Log(fmt.Sprintf("Failed to fetch animepahe detail page %s: %v", animeUrl, err))
-					continue
-				}
-				body, readErr := io.ReadAll(resp.Body)
-				resp.Body.Close()
-				if readErr != nil {
-					Log(fmt.Sprintf("Failed to read animepahe detail page %s: %v", animeUrl, readErr))
-					continue
-				}
-				if resp.StatusCode == http.StatusOK {
-					bodyStr := string(body)
-
-					metaTag := fmt.Sprintf(`<meta name="anilist" content="%s">`, targetAnilistID)
-					if strings.Contains(bodyStr, metaTag) {
-						Log(fmt.Sprintf("FOUND EXACT ANILIST META TAG MATCH in %s!", opt.Title))
-						bestMatch = opt
-						highestScore = 100
-						break
-					}
-
-					malMetaTag := fmt.Sprintf(`<meta name="mal" content="%d">`, anime.MalId)
-					if anime.MalId != 0 && strings.Contains(bodyStr, malMetaTag) {
-						Log(fmt.Sprintf("FOUND EXACT MAL META TAG MATCH in %s!", opt.Title))
-						bestMatch = opt
-						highestScore = 100
-						break
-					}
-				}
-			}
-
-			if score > highestScore {
-				highestScore = score
-				bestMatch = opt
-			}
-		}
-
-		if bestMatch != nil && highestScore == 100 {
-			anime.ProviderId = bestMatch.Key
-			Log(fmt.Sprintf("Found EXACT meta tag match! Score: %d. Setting ProviderId to: %s", highestScore, anime.ProviderId))
-			return true
-		}
-		if bestMatch != nil {
-			Log(fmt.Sprintf("Highest match score was %d (needed 100 for Animepahe exact meta tag match). Not selecting automatically to prevent false positives.", highestScore))
-			if confirmProviderMatch(*bestMatch, "Animepahe metadata") {
-				anime.ProviderId = bestMatch.Key
-				Log(fmt.Sprintf("User confirmed Animepahe match. Setting ProviderId to: %s", anime.ProviderId))
-				return true
-			}
-		}
-	}
 
 	if anilistEntry != nil {
 		targetLabel := fmt.Sprintf("%v (%d episodes)", userQuery, anilistEntry.Media.Episodes)

@@ -324,19 +324,16 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 			return "", fmt.Errorf("failed to load file in existing MPV instance: %w", err)
 		}
 
-		// Wait a brief moment for the file to load
-		time.Sleep(200 * time.Millisecond)
-
 		// Also load the external subtitle for this episode if available
 		if subtitleURL := strings.TrimSpace(anime.Ep.SubtitleURL); subtitleURL != "" {
-			subCommand := []interface{}{"sub-add", subtitleURL, "select"}
-			_, subErr := MPVSendCommand(mpvSocketPath, subCommand)
-			if subErr != nil {
-				Log(fmt.Sprintf("Failed to load subtitle for next episode: %v", subErr))
-			} else {
-				_, _ = MPVSendCommand(mpvSocketPath, []interface{}{"set_property", "sub-visibility", true})
-			}
+			go func(socket string, subURL string) {
+				time.Sleep(150 * time.Millisecond)
+				if err := EnsureMPVSubtitle(socket, subURL); err != nil {
+					Log(fmt.Sprintf("EnsureMPVSubtitle background error: %v", err))
+				}
+			}(mpvSocketPath, subtitleURL)
 		}
+
 
 		// Update the window title
 		titleCommand := []interface{}{"set_property", "force-media-title", title}
@@ -726,6 +723,40 @@ func ExitMPV(ipcSocketPath string) error {
 	}
 	return err
 }
+
+func EnsureMPVSubtitle(ipcSocketPath string, subtitleURL string) error {
+	subtitleURL = strings.TrimSpace(subtitleURL)
+	if subtitleURL == "" || ipcSocketPath == "" {
+		return nil
+	}
+
+	var lastErr error
+	maxRetries := 15
+	retryDelay := 200 * time.Millisecond
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		_, subErr := MPVSendCommand(ipcSocketPath, []interface{}{"sub-add", subtitleURL, "select"})
+		if subErr == nil {
+			_, _ = MPVSendCommand(ipcSocketPath, []interface{}{"set_property", "sub-visibility", true})
+			Log(fmt.Sprintf("Successfully added external subtitle on attempt %d: %s", attempt+1, subtitleURL))
+			return nil
+		}
+		lastErr = subErr
+
+		_, setPropErr := MPVSendCommand(ipcSocketPath, []interface{}{"set_property", "sub-file", subtitleURL})
+		if setPropErr == nil {
+			_, _ = MPVSendCommand(ipcSocketPath, []interface{}{"set_property", "sub-visibility", true})
+			Log(fmt.Sprintf("Successfully set sub-file property on attempt %d: %s", attempt+1, subtitleURL))
+			return nil
+		}
+
+		time.Sleep(retryDelay)
+	}
+
+	Log(fmt.Sprintf("Failed to load subtitle after %d attempts: %v", maxRetries, lastErr))
+	return lastErr
+}
+
 
 // MPVEventListener represents a structure to track MPV events
 type MPVEventListener struct {

@@ -4,18 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
-	"net/url"
 	"strings"
 	"time"
 )
 
 var sharedHTTPClient *http.Client
-
-func SetCookiesForAnimepahe(u *url.URL, cookies []*http.Cookie) {
-	if sharedHTTPClient != nil && sharedHTTPClient.Jar != nil {
-		sharedHTTPClient.Jar.SetCookies(u, cookies)
-	}
-}
 
 func httpStatusOK(statusCode int) bool {
 	return statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices

@@ -3,7 +3,6 @@ package curdhost
 import (
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -23,7 +22,6 @@ var (
 	PersistSubStylePreference func(style string) error
 	StoragePath             func() string
 	AnimeNameLanguage      func() string
-	SetCookiesForAnimepahe func(u *url.URL, cookies []*http.Cookie)
 )
 
 func HTTPStatusOK(statusCode int) bool {

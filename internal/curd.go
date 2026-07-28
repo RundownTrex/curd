@@ -623,7 +623,7 @@ func AddNewAnime(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseA
 		userInput, err := GetUserInputFromRofi("Enter the anime name")
 		if err != nil {
 			Log("Error getting user input: " + err.Error())
-			ExitCurd(fmt.Errorf("Error getting user input: " + err.Error()))
+			ExitCurd(fmt.Errorf("Error getting user input: %w", err))
 		}
 		query = userInput
 	} else {
@@ -1159,7 +1159,7 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 					userInput, err := GetUserInputFromRofi("Enter the episode you want to start from")
 					if err != nil {
 						Log("Error getting user input: " + err.Error())
-						ExitCurd(fmt.Errorf("Error getting user input: " + err.Error()))
+						ExitCurd(fmt.Errorf("Error getting user input: %w", err))
 					}
 					episodeNumber, err = strconv.Atoi(userInput)
 				} else {
@@ -1178,7 +1178,7 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 			userInput, err := GetUserInputFromRofi("Would like to start the anime from beginning? (y/n)")
 			if err != nil {
 				Log("Error getting user input: " + err.Error())
-				ExitCurd(fmt.Errorf("Error getting user input: " + err.Error()))
+				ExitCurd(fmt.Errorf("Error getting user input: %w", err))
 			}
 			answer = userInput
 		} else {
@@ -1247,18 +1247,6 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 		if err != nil {
 			linkErr := err
 			Log(fmt.Sprintf("ResolveEpisodeURL failed: %v", linkErr))
-			if reselectProviderAnime(userCurdConfig, anime, linkErr) {
-				episodeResult, err = ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
-				link = episodeResult.Links
-				if err == nil {
-					Log(fmt.Sprintf("Successfully retrieved %s/%s episode link after provider reselect. Links count: %d", episodeResult.ProviderName, episodeResult.Mode, len(link)))
-					anime.Ep.Links = link
-					applyStreamPlaybackHints(anime, anime.Ep.Links, episodeResult.LinkHints)
-					goto episodeLinksReady
-				}
-				linkErr = err
-				Log(fmt.Sprintf("ResolveEpisodeURL still failed after provider reselect: %v", linkErr))
-			}
 			for {
 				switch promptEpisodeLinkFailureRecovery(userCurdConfig) {
 				case "remap":
@@ -1408,10 +1396,7 @@ func resolveRuntimeProviderID(userCurdConfig *CurdConfig, anime *Anime) error {
 	}
 
 	providerName, providerID := AnimeProviderID(anime)
-	if providerName != "animepahe" || !ProviderEnabled("animepahe") {
-		return nil
-	}
-	if !ProviderStackContains(userCurdConfig, "animepahe") {
+	if providerName == "" || !ProviderEnabled(providerName) || !ProviderStackContains(userCurdConfig, providerName) {
 		return nil
 	}
 
@@ -1433,64 +1418,12 @@ func resolveRuntimeProviderID(userCurdConfig *CurdConfig, anime *Anime) error {
 		return err
 	}
 	if resolved != "" && resolved != providerID {
-		Log(fmt.Sprintf("Resolved Animepahe provider id %s to runtime id %s", providerID, resolved))
+		Log(fmt.Sprintf("Resolved provider %s id %s to runtime id %s", providerName, providerID, resolved))
 		anime.ProviderId = resolved
 		anime.ProviderName = providerName
 	}
 
 	return nil
-}
-
-func reselectProviderAnime(userCurdConfig *CurdConfig, anime *Anime, reason error) bool {
-	providerName, _ := AnimeProviderID(anime)
-	if providerName != "animepahe" || !ProviderEnabled("animepahe") {
-		return false
-	}
-
-	if reason != nil {
-		Log(fmt.Sprintf("Attempting Animepahe provider reselect after error: %v", reason))
-	}
-
-	query := GetAnimeName(*anime)
-	if query == "" {
-		query = anime.Title.Romaji
-	}
-	if query == "" {
-		query = anime.Title.English
-	}
-	if query == "" {
-		return false
-	}
-
-	options, err := SearchAnime(query, userCurdConfig.SubOrDub)
-	if err != nil {
-		Log(fmt.Sprintf("Animepahe provider reselect search failed for %q: %v", query, err))
-		return false
-	}
-	if len(options) == 0 {
-		Log(fmt.Sprintf("Animepahe provider reselect found no results for %q", query))
-		return false
-	}
-
-	CurdOut("The saved Animepahe mapping is stale. Please select the anime again.")
-	selected, err := DynamicSelect(options)
-	if err != nil || selected.Key == "-1" || selected.Key == "-2" || selected.Key == "" {
-		if err != nil {
-			Log(fmt.Sprintf("Animepahe provider reselect failed: %v", err))
-		}
-		return false
-	}
-
-	if selectedProviderName, rawProviderID, ok := ParseProviderQualifiedID(selected.Key); ok {
-		anime.ProviderName = selectedProviderName
-		anime.ProviderId = rawProviderID
-	} else {
-		anime.ProviderName = "animepahe"
-		anime.ProviderId = selected.Key
-	}
-	anime.Ep.NextEpisode = NextEpisode{}
-	Log(fmt.Sprintf("Updated Animepahe ProviderId to %s after stale mapping", anime.ProviderId))
-	return true
 }
 
 func CheckAndDownloadFiles(storagePath string, filesToCheck []string) error {

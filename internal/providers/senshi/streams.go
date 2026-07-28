@@ -19,10 +19,6 @@ func getEpisodeStreamsForMode(malIDStr string, config providers.PlaybackConfig, 
 	}
 
 	mode := providers.NormalizeTranslationType(config.SubOrDub)
-	wantStatus := "HardSub"
-	if mode == "dub" {
-		wantStatus = "Dub"
-	}
 
 	var embeds []embedItem
 	reqURL := fmt.Sprintf("%s/episode-embeds/%d/%d", baseURL, malID, epNo)
@@ -33,42 +29,66 @@ func getEpisodeStreamsForMode(malIDStr string, config providers.PlaybackConfig, 
 		return nil, nil, fmt.Errorf("no streams found for episode %d", epNo)
 	}
 
-	for _, item := range embeds {
-		if !strings.EqualFold(strings.TrimSpace(item.Status), wantStatus) {
-			continue
+	var chosenItem *embedItem
+	for i := range embeds {
+		item := &embeds[i]
+		status := strings.TrimSpace(item.Status)
+		if mode == "dub" {
+			if strings.EqualFold(status, "Dub") {
+				chosenItem = item
+				break
+			}
+		} else {
+			if !strings.EqualFold(status, "Dub") {
+				chosenItem = item
+				break
+			}
 		}
-		streamURL := strings.TrimSpace(item.URL)
-		if streamURL == "" {
-			continue
+	}
+	if chosenItem == nil {
+		// Fallback to first available embed with non-empty URL
+		for i := range embeds {
+			if strings.TrimSpace(embeds[i].URL) != "" {
+				chosenItem = &embeds[i]
+				break
+			}
 		}
-		hints := map[string]providers.StreamPlaybackHint{
-			streamURL: {
-				Referrer: baseURL + "/",
-			},
-		}
+	}
+	if chosenItem == nil || strings.TrimSpace(chosenItem.URL) == "" {
+		return nil, nil, fmt.Errorf("no %s streams found for episode %d", mode, epNo)
+	}
 
-		if item.ServerFM != nil {
-			if u, err := url.Parse(*item.ServerFM); err == nil {
-				subInfoURL := u.Query().Get("sub.info")
-				if subInfoURL != "" {
-					var subs []subtitleItem
-					if err := fetchJSON(http.MethodGet, subInfoURL, nil, &subs); err == nil {
-						for _, sub := range subs {
-							// Prefer English subtitles
-							if strings.Contains(strings.ToLower(sub.Label), "eng") || sub.Default {
-								hint := hints[streamURL]
-								hint.Subtitle = sub.Src
-								hints[streamURL] = hint
-								break
-							}
+	streamURL := strings.TrimSpace(chosenItem.URL)
+	finalURL := streamURL
+	if proxiedURL, err := registerSenshiStream(streamURL, baseURL+"/"); err == nil {
+		finalURL = proxiedURL
+	}
+
+	hints := map[string]providers.StreamPlaybackHint{
+		finalURL: {
+			Referrer: baseURL + "/",
+		},
+	}
+
+	if chosenItem.ServerFM != nil {
+		if u, err := url.Parse(*chosenItem.ServerFM); err == nil {
+			subInfoURL := u.Query().Get("sub.info")
+			if subInfoURL != "" {
+				var subs []subtitleItem
+				if err := fetchJSON(http.MethodGet, subInfoURL, nil, &subs); err == nil {
+					for _, sub := range subs {
+						// Prefer English subtitles
+						if strings.Contains(strings.ToLower(sub.Label), "eng") || sub.Default {
+							hint := hints[finalURL]
+							hint.Subtitle = sub.Src
+							hints[finalURL] = hint
+							break
 						}
 					}
 				}
 			}
 		}
-
-		return []string{streamURL}, hints, nil
 	}
 
-	return nil, nil, fmt.Errorf("no %s streams found for episode %d", mode, epNo)
+	return []string{finalURL}, hints, nil
 }

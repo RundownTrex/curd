@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/wraient/curd/internal/providers"
-	"github.com/wraient/curd/internal/providers/animepahe"
 )
 
 // Provider interface defines methods for an anime provider.
@@ -69,11 +68,11 @@ func parseProviderConfig(rawProvider string) ([]string, bool) {
 	buildConfig := func(parts []string) ([]string, bool) {
 		providers := make([]string, 0, len(parts))
 		seen := make(map[string]struct{})
-		animepaheDeclined := false
+		optOutDeclined := false
 
 		for _, part := range parts {
 			if isProviderOptOutToken(part) {
-				animepaheDeclined = true
+				optOutDeclined = true
 				continue
 			}
 
@@ -88,23 +87,23 @@ func parseProviderConfig(rawProvider string) ([]string, bool) {
 			providers = append(providers, name)
 		}
 
-		return providers, animepaheDeclined
+		return providers, optOutDeclined
 	}
 
 	parts := parseProviderConfigParts(rawProvider)
-	providers, animepaheDeclined := buildConfig(parts)
-	if len(providers) == 0 && !animepaheDeclined {
+	providers, optOutDeclined := buildConfig(parts)
+	if len(providers) == 0 && !optOutDeclined {
 		parts = strings.FieldsFunc(rawProvider, func(r rune) bool {
 			return r == ',' || r == '+' || r == '|' || r == ';'
 		})
-		providers, animepaheDeclined = buildConfig(parts)
+		providers, optOutDeclined = buildConfig(parts)
 	}
 
 	if len(providers) == 0 {
 		providers = []string{firstEnabledProviderName()}
 	}
 
-	return providers, animepaheDeclined
+	return providers, optOutDeclined
 }
 
 func configuredProviderNames(config *CurdConfig) []string {
@@ -127,22 +126,17 @@ func canonicalProviderConfigValue(rawProvider string) string {
 		return stackedProviderConfigValue
 	}
 
-	names, animepaheDeclined := parseProviderConfig(rawProvider)
-	if !animepaheDeclined && providerListsEqual(names, defaultEnabledProviderStack()) {
+	names, optOutDeclined := parseProviderConfig(rawProvider)
+	if !optOutDeclined && providerListsEqual(names, defaultEnabledProviderStack()) {
 		return stackedProviderConfigValue
 	}
-	return formatProviderConfigValue(names, animepaheDeclined)
+	return formatProviderConfigValue(names, optOutDeclined)
 }
 
-func formatProviderConfigValue(names []string, animepaheDeclined bool) string {
+func formatProviderConfigValue(names []string, optOutDeclined bool) string {
 	quotedNames := make([]string, 0, len(names)+1)
 	for _, name := range names {
 		quotedNames = append(quotedNames, fmt.Sprintf("%q", name))
-	}
-	if animepaheDeclined {
-		if token := providerOptOutTokenForName("animepahe"); token != "" {
-			quotedNames = append(quotedNames, fmt.Sprintf("%q", token))
-		}
 	}
 	return "[" + strings.Join(quotedNames, ",") + "]"
 }
@@ -170,14 +164,6 @@ func providerOptOutTokenForName(providerName string) string {
 		return ""
 	}
 	return meta.OptOutToken
-}
-
-func animepaheDeclinedInConfig(config *CurdConfig) bool {
-	if config == nil {
-		return false
-	}
-	_, declined := parseProviderConfig(config.Provider)
-	return declined
 }
 
 func ProviderStackContains(config *CurdConfig, providerName string) bool {
@@ -339,9 +325,6 @@ func providerNamesForAnime(config *CurdConfig, anime *Anime) []string {
 		seen[name] = struct{}{}
 		result = append(result, name)
 	}
-	if providerName == "animepahe" && !ProviderStackContains(config, "animepahe") {
-		providerName = ""
-	}
 	if providerName != "" && !ProviderEnabled(providerName) {
 		providerName = ""
 	}
@@ -495,10 +478,7 @@ func getProviderTotalEpisodes(provider Provider, showID, mode string) (int, erro
 	}
 
 	preferredMode := normalizeTranslationType(mode)
-	lookupModes := []string{preferredMode}
-	if !strings.EqualFold(provider.Name(), "animepahe") {
-		lookupModes = append(lookupModes, alternateTranslationType(preferredMode))
-	}
+	lookupModes := []string{preferredMode, alternateTranslationType(preferredMode)}
 
 	bestTotal := 0
 	var lookupErrors []string
@@ -523,9 +503,6 @@ func getProviderTotalEpisodes(provider Provider, showID, mode string) (int, erro
 }
 
 func inferProviderTotalEpisodes(providerName string, episodes []string) int {
-	if strings.EqualFold(providerName, "animepahe") {
-		return countUsableEpisodeEntries(episodes)
-	}
 	return inferTotalEpisodesFromEpisodeList(episodes)
 }
 
@@ -794,9 +771,6 @@ func scoreProviderSearchOption(option SelectionOption, anime *Anime, query strin
 		score += 120
 	}
 	if anime.TotalEpisodes > 0 && strings.Contains(option.Label, fmt.Sprintf("(%d episodes)", anime.TotalEpisodes)) {
-		score += 20
-	}
-	if item, ok := option.ExtraData.(animepahe.SearchItem); ok && anime.TotalEpisodes > 0 && item.Episodes == anime.TotalEpisodes {
 		score += 20
 	}
 	return score

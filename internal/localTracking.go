@@ -325,7 +325,7 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 			userInput, err := GetUserInputFromRofi("Enter the anime name")
 			if err != nil {
 				Log("Error getting user input: " + err.Error())
-				ExitCurd(fmt.Errorf("Error getting user input: " + err.Error()))
+				ExitCurd(fmt.Errorf("Error getting user input: %w", err))
 			}
 			query = userInput
 		} else {
@@ -383,7 +383,7 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 		userInput, err := GetUserInputFromRofi("Enter the episode number")
 		if err != nil {
 			Log("Error getting episode number: " + err.Error())
-			ExitCurd(fmt.Errorf("Error getting episode number: " + err.Error()))
+			ExitCurd(fmt.Errorf("Error getting episode number: %w", err))
 		}
 		episodeNumber, err = strconv.Atoi(userInput)
 		if err != nil {
