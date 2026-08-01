@@ -2,14 +2,14 @@ package senshi
 
 // SearchItem is stored in SelectionOption.ExtraData for mapping hints.
 type SearchItem struct {
-	MalID     int
-	PublicID  string
-	Title     string
-	Type      string
-	Episodes  int
-	Year      int
-	Score     float64
-	Status    string
+	MalID    int
+	PublicID string
+	Title    string
+	Type     string
+	Episodes int
+	Year     int
+	Score    float64
+	Status   string
 }
 
 type filterResponse struct {
@@ -18,16 +18,16 @@ type filterResponse struct {
 }
 
 type animeItem struct {
-	ID            int     `json:"id"`
-	PublicID      string  `json:"public_id"`
-	AnimePicture  string  `json:"anime_picture"`
-	Title         string  `json:"title"`
-	TitleEnglish  string  `json:"title_english"`
-	Type          string  `json:"type"`
-	AniEpisodes   string  `json:"ani_episodes"`
-	AniStatus     string  `json:"ani_status"`
-	AniYear       int     `json:"ani_year"`
-	Score         float64 `json:"score"`
+	ID           int     `json:"id"`
+	PublicID     string  `json:"public_id"`
+	AnimePicture string  `json:"anime_picture"`
+	Title        string  `json:"title"`
+	TitleEnglish string  `json:"title_english"`
+	Type         string  `json:"type"`
+	AniEpisodes  string  `json:"ani_episodes"`
+	AniStatus    string  `json:"ani_status"`
+	AniYear      int     `json:"ani_year"`
+	Score        float64 `json:"score"`
 }
 
 type episodeItem struct {
@@ -40,14 +40,10 @@ type episodeItem struct {
 }
 
 type embedItem struct {
-	URL      string  `json:"url"`
-	Server2  *string `json:"server2"`
-	ServerFM *string `json:"serverFM"`
-	Status   string  `json:"status"`
-}
-
-type subtitleItem struct {
-	Src     string `json:"src"`
-	Label   string `json:"label"`
-	Default bool   `json:"default"`
+	URL           string  `json:"url"`
+	Server2       *string `json:"server2"`
+	ServerFM      *string `json:"serverFM"`
+	Download      *string `json:"download"`
+	Status        string  `json:"status"`
+	MaskedBaseURL string  `json:"masked_base_url"`
 }

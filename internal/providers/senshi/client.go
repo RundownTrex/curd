@@ -2,11 +2,9 @@ package senshi
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -20,19 +18,13 @@ var baseURL = "https://senshi.live"
 
 var senshiHTTPClient = &http.Client{
 	Timeout: 15 * time.Second,
-	Transport: &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext(ctx, "tcp4", addr)
-		},
-	},
 }
 
 func httpClient() *http.Client {
-	if client := curdhost.HTTPClient(); client != nil {
-		return client
+	if curdhost.HTTPClient != nil {
+		if client := curdhost.HTTPClient(); client != nil {
+			return client
+		}
 	}
 	return senshiHTTPClient
 }
@@ -67,7 +59,7 @@ func fetchJSON(method, rawURL string, payload any, dest any) error {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := senshiHTTPClient.Do(req)
+	resp, err := httpClient().Do(req)
 	if err != nil {
 		return err
 	}
@@ -89,6 +81,13 @@ func fetchJSON(method, rawURL string, payload any, dest any) error {
 	return nil
 }
 
+func posterURL(malID int) string {
+	if malID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s/posters/%d.webp", baseURL, malID)
+}
+
 func absoluteURL(path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -101,11 +100,4 @@ func absoluteURL(path string) string {
 		path = "/" + path
 	}
 	return baseURL + path
-}
-
-func posterURL(malID int) string {
-	if malID <= 0 {
-		return ""
-	}
-	return fmt.Sprintf("%s/posters/%d.webp", baseURL, malID)
 }

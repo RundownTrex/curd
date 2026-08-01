@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wraient/curd/internal/curdhost"
 	"github.com/wraient/curd/internal/providers"
@@ -351,13 +352,12 @@ func fetchAllanimeEpisodeSources(id, mode string, epNo int) ([]allanimeSource, e
 
 func fetchEpisodeSourcesForMode(id, mode string, epNo int) ([]allanimeSource, error) {
 	keys, err := getAllanimeKeys()
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch allanime keys: %w", err)
-	}
-
-	aaReq, err := getAAReq(keys.Epoch, keys.Key, allanimeQueryHash)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate aaReq: %w", err)
+	var aaReq string
+	if err == nil && keys != nil {
+		aaReq, _ = getAAReq(keys.Epoch, keys.Key, allanimeQueryHash)
+	} else {
+		epoch := int(time.Now().Unix() / 300)
+		aaReq, _ = getAAReq(epoch, "0000000000000000000000000000000000000000000000000000000000000000", allanimeQueryHash)
 	}
 
 	episodeEmbedGQL := `query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls }}`

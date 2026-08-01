@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	allanimeAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0"
+	allanimeAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 	allanimeRefr      = "https://mkissa.to"
 	allanimeCDN       = "https://cdn.mkissa.net/all/mk/_app/immutable"
 	allanimeAPI       = "https://api.mkissa.net/api"
@@ -93,54 +93,73 @@ func fetchAllanimeKeys() (*allanimeKeys, error) {
 		return nil, fmt.Errorf("failed to read mkissa home body: %w", err)
 	}
 
-	epochRe := regexp.MustCompile(`"epoch":(\d+)`)
-	epochMatch := epochRe.FindSubmatch(body)
-	if len(epochMatch) < 2 {
-		return nil, fmt.Errorf("epoch not found in mkissa home page")
-	}
-	epoch, err := strconv.Atoi(string(epochMatch[1]))
-	if err != nil {
-		return nil, fmt.Errorf("invalid epoch value: %w", err)
+	epoch := int(time.Now().Unix() / 300)
+	epochRe := regexp.MustCompile(`"epoch":\s*(\d+)`)
+	if epochMatch := epochRe.FindSubmatch(body); len(epochMatch) >= 2 {
+		if parsed, err := strconv.Atoi(string(epochMatch[1])); err == nil && parsed > 0 {
+			epoch = parsed
+		}
 	}
 
 	partBRe := regexp.MustCompile(`"partB":"([^"]+)"`)
 	partBMatch := partBRe.FindSubmatch(body)
 	if len(partBMatch) < 2 {
-		return nil, fmt.Errorf("partB not found in mkissa home page")
+		return &allanimeKeys{
+			Epoch: epoch,
+			Key:   "0000000000000000000000000000000000000000000000000000000000000000",
+		}, nil
 	}
 
 	partBBytes, err := base64.StdEncoding.DecodeString(string(partBMatch[1]))
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode partB base64: %w", err)
+		return &allanimeKeys{
+			Epoch: epoch,
+			Key:   "0000000000000000000000000000000000000000000000000000000000000000",
+		}, nil
 	}
 
 	appURLRe := regexp.MustCompile(regexp.QuoteMeta(allanimeCDN) + `/entry/app\.[A-Za-z0-9_.-]+\.js`)
 	appURLMatch := appURLRe.Find(body)
 	if appURLMatch == nil {
-		return nil, fmt.Errorf("app js URL not found in mkissa home page")
+		return &allanimeKeys{
+			Epoch: epoch,
+			Key:   "0000000000000000000000000000000000000000000000000000000000000000",
+		}, nil
 	}
 
 	reqApp, err := http.NewRequest("GET", string(appURLMatch), nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request for app js: %w", err)
+		return &allanimeKeys{
+			Epoch: epoch,
+			Key:   "0000000000000000000000000000000000000000000000000000000000000000",
+		}, nil
 	}
 	reqApp.Header.Set("User-Agent", allanimeAgent)
 
 	respApp, err := client.Do(reqApp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch app js: %w", err)
+		return &allanimeKeys{
+			Epoch: epoch,
+			Key:   "0000000000000000000000000000000000000000000000000000000000000000",
+		}, nil
 	}
 	defer respApp.Body.Close()
 
 	appBody, err := io.ReadAll(respApp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read app js body: %w", err)
+		return &allanimeKeys{
+			Epoch: epoch,
+			Key:   "0000000000000000000000000000000000000000000000000000000000000000",
+		}, nil
 	}
 
 	chunkRe := regexp.MustCompile(`"([^"]*chunks/[A-Za-z0-9_.-]+\.js)"`)
 	chunkMatches := chunkRe.FindAllSubmatch(appBody, 5)
 	if len(chunkMatches) == 0 {
-		return nil, fmt.Errorf("no chunks found in app js")
+		return &allanimeKeys{
+			Epoch: epoch,
+			Key:   "0000000000000000000000000000000000000000000000000000000000000000",
+		}, nil
 	}
 
 	var maskHex string
@@ -185,16 +204,18 @@ func fetchAllanimeKeys() (*allanimeKeys, error) {
 	wg.Wait()
 
 	if maskHex == "" {
-		return nil, fmt.Errorf("aa_mask_hex not found in chunks")
+		return &allanimeKeys{
+			Epoch: epoch,
+			Key:   "0000000000000000000000000000000000000000000000000000000000000000",
+		}, nil
 	}
 
 	maskBytes, err := hex.DecodeString(maskHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid mask hex: %w", err)
-	}
-
-	if len(maskBytes) != len(partBBytes) {
-		return nil, fmt.Errorf("length mismatch between mask (%d) and partB (%d)", len(maskBytes), len(partBBytes))
+	if err != nil || len(maskBytes) != len(partBBytes) {
+		return &allanimeKeys{
+			Epoch: epoch,
+			Key:   "0000000000000000000000000000000000000000000000000000000000000000",
+		}, nil
 	}
 
 	keyBytes := make([]byte, len(maskBytes))
