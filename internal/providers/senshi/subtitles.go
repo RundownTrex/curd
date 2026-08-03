@@ -1,7 +1,9 @@
 package senshi
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,17 +25,35 @@ type senshiSubtitleTrack struct {
 	Default bool   `json:"default"`
 }
 
-func senshiSubtitleManifestURL(item embedItem) string {
-	if item.ServerFM != nil {
-		if manifest := subtitleInfoFromURL(strings.TrimSpace(*item.ServerFM)); manifest != "" {
-			return manifest
+// senshiSubtitleManifestURLs returns the candidate subtitle manifest URLs in
+// preference order. Senshi historically exposed a Filemoon-style manifest via
+// the serverFM "sub.info" query parameter (sub_filemoon.json), but migrated to
+// an ArtPlayer-based player that renders styled ASS subtitles from
+// sub_artplayer.json. Try the explicit sub.info first, then both well-known
+// manifest names on the masked base URL.
+func senshiSubtitleManifestURLs(item embedItem) []string {
+	var out []string
+	push := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
 		}
+		for _, existing := range out {
+			if existing == raw {
+				return
+			}
+		}
+		out = append(out, raw)
 	}
-	base := strings.TrimSpace(item.MaskedBaseURL)
-	if base == "" {
-		return ""
+	if item.ServerFM != nil {
+		push(subtitleInfoFromURL(strings.TrimSpace(*item.ServerFM)))
 	}
-	return strings.TrimRight(base, "/") + "/sub_filemoon.json"
+	base := strings.TrimRight(strings.TrimSpace(item.MaskedBaseURL), "/")
+	if base != "" {
+		push(base + "/sub_filemoon.json")
+		push(base + "/sub_artplayer.json")
+	}
+	return out
 }
 
 func subtitleInfoFromURL(rawURL string) string {
@@ -47,17 +67,127 @@ func subtitleInfoFromURL(rawURL string) string {
 	return strings.TrimSpace(parsed.Query().Get("sub.info"))
 }
 
+// fetchSenshiSubtitle downloads and parses a subtitle manifest, returning the
+// subtitle file URLs in preference order.
 func fetchSenshiSubtitle(manifestURL string) ([]string, error) {
 	manifestURL = strings.TrimSpace(manifestURL)
 	if manifestURL == "" {
 		return nil, nil
 	}
 
-	var tracks []senshiSubtitleTrack
-	if err := fetchJSON(http.MethodGet, manifestURL, nil, &tracks); err != nil {
+	var raw json.RawMessage
+	if err := fetchJSON(http.MethodGet, manifestURL, nil, &raw); err != nil {
+		return nil, err
+	}
+	tracks, err := parseSenshiSubtitleTracks(raw)
+	if err != nil {
 		return nil, err
 	}
 	return senshiSubtitleTrackSources(tracks), nil
+}
+
+// parseSenshiSubtitleTracks decodes a subtitle manifest into tracks. Senshi
+// has used several shapes over time, so this tolerates them all:
+//   - Filemoon style: [{"src":"...","label":"...","default":true}, ...]
+//   - ArtPlayer style: [{"url":"...","html":"English","type":"ass"}, ...]
+//   - a wrapper object holding the array under "tracks"/"subtitles"/"subs"
+//   - a plain array of URL strings
+//   - a single track object
+func parseSenshiSubtitleTracks(raw []byte) ([]senshiSubtitleTrack, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	var root any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil, fmt.Errorf("parse senshi subtitle manifest: %w", err)
+	}
+	tracks := subtitleTracksFromNode(root)
+	if len(tracks) == 0 {
+		if isEmptyNode(root) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("senshi subtitle manifest contains no recognizable tracks")
+	}
+	return tracks, nil
+}
+
+// isEmptyNode reports whether the parsed manifest root is structurally empty
+// (an empty array/object), which is a valid "no subtitles" result rather than
+// a parse failure.
+func isEmptyNode(node any) bool {
+	switch value := node.(type) {
+	case nil:
+		return true
+	case []any:
+		return len(value) == 0
+	case map[string]any:
+		return len(value) == 0
+	case string:
+		return strings.TrimSpace(value) == ""
+	}
+	return false
+}
+
+func subtitleTracksFromNode(node any) []senshiSubtitleTrack {
+	switch value := node.(type) {
+	case []any:
+		var tracks []senshiSubtitleTrack
+		for _, item := range value {
+			tracks = append(tracks, subtitleTracksFromNode(item)...)
+		}
+		return tracks
+	case map[string]any:
+		if tracks, ok := subtitleTracksFromObject(value); ok {
+			return tracks
+		}
+	case string:
+		if src := strings.TrimSpace(value); src != "" {
+			return []senshiSubtitleTrack{{Src: src}}
+		}
+	}
+	return nil
+}
+
+func subtitleTracksFromObject(obj map[string]any) ([]senshiSubtitleTrack, bool) {
+	for _, key := range []string{"tracks", "subtitles", "subs", "data"} {
+		if child, ok := obj[key]; ok {
+			if tracks := subtitleTracksFromNode(child); len(tracks) > 0 {
+				return tracks, true
+			}
+		}
+	}
+	if track, ok := subtitleTrackFromObject(obj); ok {
+		return []senshiSubtitleTrack{track}, true
+	}
+	return nil, false
+}
+
+func subtitleTrackFromObject(obj map[string]any) (senshiSubtitleTrack, bool) {
+	track := senshiSubtitleTrack{
+		Src:   subtitleFirstString(obj, "src", "url", "file"),
+		Label: subtitleFirstString(obj, "label", "html", "lang", "language", "name"),
+	}
+	switch value := obj["default"].(type) {
+	case bool:
+		track.Default = value
+	case string:
+		track.Default = strings.EqualFold(value, "true") || strings.EqualFold(value, "default")
+	}
+	if track.Src == "" {
+		return track, false
+	}
+	return track, true
+}
+
+func subtitleFirstString(obj map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := obj[key].(string); ok {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
 }
 
 // senshiSubtitleTrackSources returns the subtitle file URLs in preference
@@ -109,18 +239,16 @@ func isSenshiForcedSubtitleLabel(label string) bool {
 }
 
 func resolveSenshiSubtitle(item embedItem) string {
-	manifestURL := senshiSubtitleManifestURL(item)
-	if manifestURL == "" {
-		return ""
-	}
-	sources, err := fetchSenshiSubtitle(manifestURL)
-	if err != nil {
-		return ""
-	}
-	for _, source := range sources {
-		prepared := prepareSenshiSubtitle(source)
-		if senshiSubtitleReachable(prepared) {
-			return prepared
+	for _, manifestURL := range senshiSubtitleManifestURLs(item) {
+		sources, err := fetchSenshiSubtitle(manifestURL)
+		if err != nil || len(sources) == 0 {
+			continue
+		}
+		for _, source := range sources {
+			prepared := prepareSenshiSubtitle(source)
+			if senshiSubtitleReachable(prepared) {
+				return prepared
+			}
 		}
 	}
 	return ""
@@ -162,22 +290,53 @@ func prepareSenshiSubtitle(subtitleURL string) string {
 	if subtitleURL == "" {
 		return ""
 	}
-	if styled := validatedSenshiASSURL(subtitleURL); styled != "" {
-		return styled
-	}
-	if local, err := cacheSanitizedSenshiVTT(subtitleURL, senshiSubtitleCacheDir()); err == nil {
-		return local
+	switch subtitleExt(subtitleURL) {
+	case ".ass", ".ssa":
+		// Styled track: hand the validated URL straight to the player (mpv
+		// renders ASS natively).
+		if styled := validatedSenshiASSURL(subtitleURL); styled != "" {
+			return styled
+		}
+		return subtitleURL
+	case ".vtt":
+		// Prefer the styled ASS twin when senshi ships one, then the
+		// sanitized VTT, then the raw URL.
+		if styled := validatedSenshiASSURL(subtitleURL); styled != "" {
+			return styled
+		}
+		if local, err := cacheSanitizedSenshiVTT(subtitleURL, senshiSubtitleCacheDir()); err == nil {
+			return local
+		}
 	}
 	return subtitleURL
 }
 
-func validatedSenshiASSURL(subtitleURL string) string {
+// subtitleExt returns the lowercase extension of the URL's path, ignoring any
+// query string.
+func subtitleExt(subtitleURL string) string {
 	parsed, err := url.Parse(strings.TrimSpace(subtitleURL))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || !strings.EqualFold(filepath.Ext(parsed.Path), ".vtt") {
+	if err != nil {
 		return ""
 	}
-	parsed.Path = strings.TrimSuffix(parsed.Path, filepath.Ext(parsed.Path)) + ".ass"
-	candidate := parsed.String()
+	return strings.ToLower(filepath.Ext(parsed.Path))
+}
+
+func validatedSenshiASSURL(subtitleURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(subtitleURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	ext := strings.ToLower(filepath.Ext(parsed.Path))
+	candidate := subtitleURL
+	switch ext {
+	case ".vtt":
+		parsed.Path = strings.TrimSuffix(parsed.Path, filepath.Ext(parsed.Path)) + ".ass"
+		candidate = parsed.String()
+	case ".ass", ".ssa":
+		// already a styled track; validate in place
+	default:
+		return ""
+	}
 
 	req, err := newRequest(http.MethodGet, candidate)
 	if err != nil {

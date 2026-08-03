@@ -23,9 +23,11 @@ If a provider resolves an external stream URL that `curd` or `yt-dlp` cannot pla
 Most providers (`anineko`, `megaplay`) provide subtitle `.vtt` tracks directly in the main response. `senshi` does **not**.
 - **Rule**: When fetching streams from `senshi` for a soft-sub mode, the stream `status` might say `HardSub` or similar for the raw video. To actually get the subtitles, you must:
   1. Inspect the `serverFM` field in the response.
-  2. Parse the `sub.info` query parameter from the `serverFM` URL, which points to a Filemoon JSON file.
-  3. Perform a `fetchJSON` request on that `sub.info` URL to get the array of subtitles.
-  4. Iterate through the array to find the English (or default) track and explicitly assign it to `StreamPlaybackHint.Subtitle` so `mpv` can load it.
+  2. Parse the `sub.info` query parameter from the `serverFM` URL, which points to a subtitle manifest JSON file.
+  3. If `sub.info` is missing or fails, fall back to `<masked_base_url>/sub_filemoon.json`, then `<masked_base_url>/sub_artplayer.json`.
+  4. Senshi has shipped several manifest shapes over time; the parser MUST tolerate all of them: Filemoon style `[{"src","label","default"}]`, ArtPlayer style `[{"url","html","type"}]`, a wrapper object with a `tracks`/`subtitles` array, a plain array of URL strings, and a single track object.
+  5. Prefer styled `.ass` tracks (senshi migrated to ArtPlayer-based ASS subtitles served from `sub_artplayer.json` alongside a `fonts/fonts.json` bundle): an `.ass` src is validated and passed straight to the player; a `.vtt` src first probes its `.ass` sibling (same path, `.ass` extension), then falls back to a sanitized local VTT.
+  6. Assign the chosen track to `StreamPlaybackHint.Subtitle` so `mpv` can load it.
 
 ## 6. HTTP Client Usage (`curdhost`)
 Do NOT use `http.DefaultClient` or `http.Get` directly in provider code.

@@ -5,572 +5,182 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/wraient/curd/internal/curdhost"
 	"github.com/wraient/curd/internal/providers"
 )
 
-const allanimeUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-
-type allanimeResolvedStream struct {
-	URL          string
-	Referrer     string
-	SubtitleURL  string
-	QualityScore int
+type anidbLanguageItem struct {
+	Code     string `json:"code"`
+	Name     string `json:"name"`
+	EmbedURL string `json:"embed_url"`
 }
 
-var (
-	allanimeClockRefererPattern     = regexp.MustCompile(`"Referer":"([^"]+)"`)
-	allanimeClockSubtitlePattern    = regexp.MustCompile(`"subtitles":\[\{"lang":"en","label":"English","default":"default","src":"([^"]+)"`)
-	allanimeStreamResolutionPattern = regexp.MustCompile(`RESOLUTION=(\d+)x(\d+)`)
-	allanimeStreamBandwidthPattern  = regexp.MustCompile(`BANDWIDTH=(\d+)`)
-)
+type anidbLanguagesResponse struct {
+	Languages []anidbLanguageItem `json:"languages"`
+}
+
+var anidbEmbedMasterPattern = regexp.MustCompile(`file:\s*[\x27\x22]([^\x27\x22]+master\.m3u8[^\x27\x22]*)[\x27\x22]`)
 
 func getAllanimeEpisodeStreamsForMode(id, mode string, epNo int) ([]string, map[string]providers.StreamPlaybackHint, error) {
-	sourceUrls, err := fetchEpisodeSourcesForMode(id, mode, epNo)
+	numericID := extractNumericID(id)
+	if numericID == "" {
+		return nil, nil, fmt.Errorf("invalid show id %q", id)
+	}
+
+	// 1. Fetch episodes list to find internal ep ID
+	episodesURL := fmt.Sprintf("%s/api/frontend/anime/%s/episodes", anidbBaseURL, numericID)
+	req1, err := http.NewRequest("GET", episodesURL, nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	return getLinksFromEncodedSourceUrls(sourceUrls)
-}
+	req1.Header.Set("User-Agent", anidbUserAgent)
+	req1.Header.Set("Referer", anidbBaseURL+"/")
 
-func getLinksFromEncodedSourceUrls(sourceUrls []allanimeSource) ([]string, map[string]providers.StreamPlaybackHint, error) {
-	type providerJob struct {
-		index int
-		name  string
-		url   string
-	}
-
-	jobs := make([]providerJob, 0, len(sourceUrls))
-	for _, source := range sortAllanimeSourcesByPriority(sourceUrls) {
-		sourceURL, ok := usableAllanimeSourceURL(source)
-		if !ok {
-			logAllanime(fmt.Sprintf("Skipping Allanime source name=%q priority=%.1f url=%s", source.SourceName, source.Priority, allanimeSourceURLShape(source.SourceUrl)))
-			continue
-		}
-		logAllanime(fmt.Sprintf("Using Allanime source name=%q priority=%.1f url=%s", source.SourceName, source.Priority, allanimeSourceURLShape(sourceURL)))
-		jobs = append(jobs, providerJob{
-			index: len(jobs),
-			name:  strings.TrimSpace(source.SourceName),
-			url:   sourceURL,
-		})
-	}
-	if len(jobs) == 0 {
-		return nil, nil, fmt.Errorf("no usable Allanime provider sources found")
-	}
-
-	type streamResult struct {
-		index   int
-		streams []allanimeResolvedStream
-		err     error
-	}
-
-	results := make(chan streamResult, len(jobs))
-	var wg sync.WaitGroup
-	for _, job := range jobs {
-		wg.Add(1)
-		go func(idx int, providerName, encodedURL string) {
-			defer wg.Done()
-			var decodedProviderID string
-			if strings.HasPrefix(encodedURL, "--") && len(encodedURL) > 2 {
-				decodedProviderID = decodeProviderID(encodedURL[2:])
-			} else {
-				decodedProviderID = encodedURL
-			}
-			logAllanime(fmt.Sprintf("Fetching Allanime provider %s via %s", providerName, decodedProviderID))
-			streams, err := resolveAllanimeClockProvider(providerName, decodedProviderID)
-			results <- streamResult{index: idx, streams: streams, err: err}
-		}(job.index, job.name, job.url)
-	}
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	orderedStreams := make([][]allanimeResolvedStream, len(jobs))
-	var collectedErrors []error
-	successCount := 0
-	timeout := time.After(15 * time.Second)
-	completedCount := 0
-	for completedCount < len(jobs) {
-		select {
-		case res, ok := <-results:
-			if !ok {
-				completedCount = len(jobs)
-				break
-			}
-			completedCount++
-			if res.err != nil {
-				logAllanime(fmt.Sprintf("Allanime provider %s failed: %v", jobs[res.index].name, res.err))
-				collectedErrors = append(collectedErrors, fmt.Errorf("%s: %w", jobs[res.index].name, res.err))
-				continue
-			}
-			if len(res.streams) > 0 {
-				orderedStreams[res.index] = res.streams
-				successCount++
-				logAllanime(fmt.Sprintf("Allanime provider %s returned %d stream(s)", jobs[res.index].name, len(res.streams)))
-			}
-		case <-timeout:
-			if successCount > 0 {
-				return buildAllanimeLinkResult(orderedStreams)
-			}
-			return nil, nil, fmt.Errorf("timeout waiting for Allanime provider links")
-		}
-	}
-
-	if successCount == 0 {
-		return nil, nil, fmt.Errorf("no valid links found from Allanime providers: %v", collectedErrors)
-	}
-	return buildAllanimeLinkResult(orderedStreams)
-}
-
-// usableAllanimeSourceURL accepts both legacy encoded sources and direct
-// streams. Mkissa's current Default source is often a direct HLS URL; the old
-// hard-coded source-name filter discarded it before it could be played.
-func usableAllanimeSourceURL(source allanimeSource) (string, bool) {
-	sourceURL := strings.TrimSpace(source.SourceUrl)
-	if strings.HasPrefix(sourceURL, "//") {
-		sourceURL = "https:" + sourceURL
-	}
-	if strings.HasPrefix(sourceURL, "--") {
-		return sourceURL, len(sourceURL) > 2
-	}
-	if isDirectPlayableAllanimeSource(allanimeSource{SourceUrl: sourceURL}) {
-		return sourceURL, true
-	}
-	return "", false
-}
-
-func logAllanime(message string) {
-	if curdhost.Log != nil {
-		curdhost.Log(message)
-	}
-}
-
-// allanimeSourceURLShape is useful in the debug log without writing signed
-// stream URLs (which can contain short-lived authorization tokens) to disk.
-func allanimeSourceURLShape(sourceURL string) string {
-	sourceURL = strings.TrimSpace(sourceURL)
-	switch {
-	case sourceURL == "":
-		return "empty"
-	case strings.HasPrefix(sourceURL, "--"):
-		return "encoded"
-	case strings.HasPrefix(sourceURL, "//"):
-		return "protocol-relative"
-	case strings.HasPrefix(sourceURL, "http://") || strings.HasPrefix(sourceURL, "https://"):
-		parsed, err := url.Parse(sourceURL)
-		if err != nil {
-			return "invalid-url"
-		}
-		return "url host=" + parsed.Host + " path=" + parsed.Path
-	default:
-		if len(sourceURL) > 40 {
-			sourceURL = sourceURL[:40] + "…"
-		}
-		return "unsupported value=" + strconv.Quote(sourceURL)
-	}
-}
-
-func buildAllanimeLinkResult(orderedStreams [][]allanimeResolvedStream) ([]string, map[string]providers.StreamPlaybackHint, error) {
-	allStreams := make([]allanimeResolvedStream, 0)
-	for _, streams := range orderedStreams {
-		allStreams = append(allStreams, streams...)
-	}
-	sort.SliceStable(allStreams, func(i, j int) bool {
-		return allStreams[i].QualityScore > allStreams[j].QualityScore
-	})
-
-	links := make([]string, 0, len(allStreams))
-	hints := make(map[string]providers.StreamPlaybackHint)
-	seen := make(map[string]struct{})
-	for _, stream := range allStreams {
-		if stream.URL == "" || isUnreliableAllanimeDirectURL(stream.URL) {
-			continue
-		}
-		if _, exists := seen[stream.URL]; exists {
-			continue
-		}
-		seen[stream.URL] = struct{}{}
-		links = append(links, stream.URL)
-		referrer := stream.Referrer
-		if referrer == "" {
-			referrer = allanimeGraphQLReferer
-		}
-		hints[stream.URL] = providers.StreamPlaybackHint{
-			Referrer: referrer,
-			Subtitle: stream.SubtitleURL,
-		}
-	}
-	if len(links) == 0 {
-		return nil, nil, fmt.Errorf("no reliable Allanime streams found")
-	}
-	return links, hints, nil
-}
-
-func resolveAllanimeClockProvider(providerName, providerPath string) ([]allanimeResolvedStream, error) {
-	providerPath = normalizeAllanimeProviderPath(providerPath)
-	if strings.HasPrefix(providerPath, "http://") || strings.HasPrefix(providerPath, "https://") {
-		if isUnreliableAllanimeDirectURL(providerPath) {
-			return nil, fmt.Errorf("skipping unreliable fast4speed source")
-		}
-
-		score := 0
-		if providerName == "Ak" || providerName == "Ss-Hls" {
-			score = 120
-		} else if providerName == "Sw" || providerName == "Sl-mp4" {
-			score = 110
-		} else if providerName == "Ok" {
-			score = 100 // Prefer Ok.ru as it works reliably out of the box in yt-dlp
-		} else if providerName == "Mp4" {
-			score = 80
-			if link := extractMp4UploadLink(providerPath); link != "" {
-				providerPath = link
-			}
-		} else if providerName == "Fm-Hls" {
-			score = 60
-		} else if providerName == "Uni" {
-			score = 40
-		}
-
-		return []allanimeResolvedStream{{
-			URL:          providerPath,
-			Referrer:     allanimeGraphQLReferer,
-			QualityScore: score,
-		}}, nil
-	}
-
-	rawBody, videoData, err := fetchAllanimeClockResponse(providerPath)
-	if err != nil {
-		return nil, err
-	}
-
-	if providerName == "Fm-mp4" {
-		if filemoonLinks := extractFilemoonLinks(videoData); len(filemoonLinks) > 0 {
-			return streamsFromPlainURLs(filemoonLinks, allanimeGraphQLReferer, ""), nil
-		}
-	}
-
-	referrer := extractAllanimeClockReferer(rawBody)
-	subtitleURL := extractAllanimeClockSubtitle(rawBody)
-	streams := make([]allanimeResolvedStream, 0)
-
-	linksInterface, ok := videoData["links"].([]interface{})
-	if !ok || len(linksInterface) == 0 {
-		return nil, fmt.Errorf("no links field in Allanime extractor response")
-	}
-
-	for _, linkInterface := range linksInterface {
-		linkMap, ok := linkInterface.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if _, hasLink := linkMap["link"]; !hasLink {
-			if _, cacheOnly := linkMap["mp4"].(bool); cacheOnly {
-				continue
-			}
-		}
-
-		resolutionScore := allanimeResolutionScore(linkMap["resolutionStr"])
-		if linkURL, ok := linkMap["link"].(string); ok && strings.TrimSpace(linkURL) != "" {
-			streams = append(streams, resolveAllanimeLinkURL(linkURL, referrer, subtitleURL, resolutionScore)...)
-			continue
-		}
-
-		if hlsMap, ok := linkMap["hls"].(map[string]interface{}); ok {
-			if hlsURL, ok := hlsMap["url"].(string); ok && strings.TrimSpace(hlsURL) != "" {
-				streams = append(streams, resolveAllanimeLinkURL(hlsURL, referrer, subtitleURL, resolutionScore)...)
-			}
-		}
-	}
-
-	if len(streams) == 0 {
-		return nil, fmt.Errorf("no playable links in Allanime extractor response")
-	}
-	sort.SliceStable(streams, func(i, j int) bool {
-		return streams[i].QualityScore > streams[j].QualityScore
-	})
-	return streams, nil
-}
-
-func fetchAllanimeClockResponse(providerPath string) ([]byte, map[string]interface{}, error) {
-	requestURL, err := allanimeClockURL(providerPath)
+	resp1, err := httpClient().Do(req1)
 	if err != nil {
 		return nil, nil, err
 	}
-	req, err := http.NewRequest("GET", requestURL, nil)
+	defer resp1.Body.Close()
+
+	body1, err := io.ReadAll(resp1.Body)
 	if err != nil {
 		return nil, nil, err
 	}
-	req.Header.Set("Referer", allanimeGraphQLReferer)
-	req.Header.Set("User-Agent", allanimeUserAgent)
+	if !curdhost.HTTPStatusOK(resp1.StatusCode) {
+		return nil, nil, curdhost.HTTPStatusError("anidb episodes", resp1.StatusCode, body1)
+	}
 
-	resp, err := httpClient().Do(req)
-	if err != nil {
+	var epRes anidbEpisodesResponse
+	if err := json.Unmarshal(body1, &epRes); err != nil {
 		return nil, nil, err
 	}
-	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !curdhost.HTTPStatusOK(resp.StatusCode) {
-		return nil, nil, curdhost.HTTPStatusError("allanime source extractor", resp.StatusCode, body)
-	}
-
-	var videoData map[string]interface{}
-	if err := json.Unmarshal(body, &videoData); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse Allanime extractor JSON: %w", err)
-	}
-	return body, videoData, nil
-}
-
-// allanimeClockURL builds the extractor URL from an encoded Allanime source.
-// Older source entries end in /clock, while current Default entries already
-// contain /clock.json.  Rewriting both forms unconditionally turns the latter
-// into clock.json.json and makes a perfectly valid Default source unusable.
-func allanimeClockURL(providerPath string) (string, error) {
-	providerPath = normalizeAllanimeProviderPath(strings.TrimSpace(providerPath))
-	if providerPath == "" {
-		return "", fmt.Errorf("empty Allanime extractor path")
-	}
-
-	parsed, err := url.Parse(providerPath)
-	if err != nil {
-		return "", fmt.Errorf("invalid Allanime extractor path: %w", err)
-	}
-	if parsed.IsAbs() {
-		return parsed.String(), nil
-	}
-
-	// Only convert the legacy endpoint. strings.ReplaceAll would also mutate
-	// the already-current /clock.json endpoint to /clock.json.json.
-	if strings.HasSuffix(parsed.Path, "/clock") {
-		parsed.Path += ".json"
-	}
-	if !strings.HasPrefix(parsed.Path, "/") {
-		parsed.Path = "/" + parsed.Path
-	}
-	return "https://allanime.day" + parsed.String(), nil
-}
-
-func resolveAllanimeLinkURL(linkURL, referrer, subtitleURL string, resolutionScore int) []allanimeResolvedStream {
-	linkURL = strings.TrimSpace(linkURL)
-	if linkURL == "" {
-		return nil
-	}
-
-	if strings.Contains(linkURL, "repackager.wixmp.com") {
-		expanded := expandWixmpLinks(linkURL)
-		return streamsFromPlainURLs(expanded, referrer, subtitleURL, resolutionScore)
-	}
-
-	if strings.Contains(linkURL, "master.m3u8") {
-		if streams, err := fetchAllanimeM3U8VariantStreams(linkURL, referrer, subtitleURL); err == nil && len(streams) > 0 {
-			return streams
-		}
-	}
-
-	qualityScore := resolutionScore
-	if qualityScore == 0 {
-		qualityScore = wixmpQualityScore(linkURL)
-	}
-	return []allanimeResolvedStream{{
-		URL:          linkURL,
-		Referrer:     referrer,
-		SubtitleURL:  subtitleURL,
-		QualityScore: qualityScore,
-	}}
-}
-
-func fetchAllanimeM3U8VariantStreams(masterURL, referrer, subtitleURL string) ([]allanimeResolvedStream, error) {
-	req, err := http.NewRequest("GET", masterURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	if referrer == "" {
-		referrer = allanimeGraphQLReferer
-	}
-	req.Header.Set("Referer", referrer)
-	req.Header.Set("User-Agent", allanimeUserAgent)
-
-	resp, err := httpClient().Do(req)
-	if err != nil {
-		return nil, err
-	}
-	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		return nil, err
-	}
-	if !curdhost.HTTPStatusOK(resp.StatusCode) {
-		return nil, curdhost.HTTPStatusError("allanime m3u8 master playlist", resp.StatusCode, body)
-	}
-
-	playlist := string(body)
-	if !strings.Contains(playlist, "EXTM3U") {
-		return nil, fmt.Errorf("response is not an m3u8 playlist")
-	}
-
-	baseURL := masterURL
-	if idx := strings.LastIndex(baseURL, "/"); idx >= 0 {
-		baseURL = baseURL[:idx+1]
-	}
-
-	lines := strings.Split(playlist, "\n")
-	streams := make([]allanimeResolvedStream, 0)
-	for i := 0; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if !strings.HasPrefix(line, "#EXT-X-STREAM-INF:") {
-			continue
-		}
-		qualityScore := parseAllanimeStreamInfScore(line)
-		i++
-		for i < len(lines) {
-			nextLine := strings.TrimSpace(lines[i])
-			if nextLine == "" {
-				i++
-				continue
-			}
-			if strings.HasPrefix(nextLine, "#EXT-X-I-FRAME-STREAM-INF") {
-				break
-			}
-			if strings.HasPrefix(nextLine, "#") {
-				i++
-				continue
-			}
-			streamURL := resolveAllanimeRelativeURL(baseURL, nextLine)
-			streams = append(streams, allanimeResolvedStream{
-				URL:          streamURL,
-				Referrer:     referrer,
-				SubtitleURL:  subtitleURL,
-				QualityScore: qualityScore,
-			})
+	var targetEpID int
+	for _, ep := range epRes.Episodes {
+		if ep.Number == epNo {
+			targetEpID = ep.ID
 			break
 		}
 	}
+	if targetEpID == 0 {
+		return nil, nil, fmt.Errorf("episode %d not found for anime %s", epNo, id)
+	}
 
-	if len(streams) == 0 {
-		return nil, fmt.Errorf("no variant streams found in m3u8 playlist")
-	}
-	sort.SliceStable(streams, func(i, j int) bool {
-		return streams[i].QualityScore > streams[j].QualityScore
-	})
-	return streams, nil
-}
-
-func parseAllanimeStreamInfScore(line string) int {
-	if match := allanimeStreamResolutionPattern.FindStringSubmatch(line); len(match) == 3 {
-		if width, err := strconv.Atoi(match[1]); err == nil && width > 0 {
-			return width
-		}
-	}
-	if match := allanimeStreamBandwidthPattern.FindStringSubmatch(line); len(match) == 2 {
-		if bandwidth, err := strconv.Atoi(match[1]); err == nil && bandwidth > 0 {
-			return bandwidth / 1000
-		}
-	}
-	return 0
-}
-
-func resolveAllanimeRelativeURL(baseURL, uri string) string {
-	uri = strings.TrimSpace(uri)
-	if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
-		return uri
-	}
-	if strings.HasPrefix(uri, "/") {
-		if parsed, err := url.Parse(baseURL); err == nil {
-			return parsed.Scheme + "://" + parsed.Host + uri
-		}
-	}
-	return baseURL + uri
-}
-
-func extractAllanimeClockReferer(rawBody []byte) string {
-	if match := allanimeClockRefererPattern.FindSubmatch(rawBody); len(match) == 2 {
-		return string(match[1])
-	}
-	return allanimeGraphQLReferer
-}
-
-func extractAllanimeClockSubtitle(rawBody []byte) string {
-	matches := regexp.MustCompile(`"subtitles":\[{"url":"([^"]+)"`).FindSubmatch(rawBody)
-	if len(matches) > 1 {
-		return string(matches[1])
-	}
-	return ""
-}
-
-func extractMp4UploadLink(embedURL string) string {
-	req, err := http.NewRequest("GET", embedURL, nil)
+	// 2. Fetch languages for the episode
+	langURL := fmt.Sprintf("%s/api/frontend/episode/%d/languages", anidbBaseURL, targetEpID)
+	req2, err := http.NewRequest("GET", langURL, nil)
 	if err != nil {
-		return ""
+		return nil, nil, err
 	}
-	req.Header.Set("User-Agent", allanimeUserAgent)
-	req.Header.Set("Referer", allanimeGraphQLReferer)
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ""
-	}
-	re := regexp.MustCompile(`src:\s*"([^"]+)"`)
-	matches := re.FindStringSubmatch(string(body))
-	if len(matches) > 1 {
-		return matches[1]
-	}
-	return ""
-}
+	req2.Header.Set("User-Agent", anidbUserAgent)
+	req2.Header.Set("Referer", anidbBaseURL+"/")
 
-func allanimeResolutionScore(value interface{}) int {
-	text := strings.TrimSpace(fmt.Sprint(value))
-	if text == "" {
-		return 0
+	resp2, err := httpClient().Do(req2)
+	if err != nil {
+		return nil, nil, err
 	}
-	if score := wixmpQualityScore(text); score > 0 {
-		return score
-	}
-	if digits := regexp.MustCompile(`(\d{3,4})`).FindStringSubmatch(text); len(digits) == 2 {
-		if score, err := strconv.Atoi(digits[1]); err == nil {
-			return score
-		}
-	}
-	return 0
-}
+	defer resp2.Body.Close()
 
-func streamsFromPlainURLs(urls []string, referrer, subtitleURL string, qualityScores ...int) []allanimeResolvedStream {
-	defaultScore := 0
-	if len(qualityScores) > 0 {
-		defaultScore = qualityScores[0]
+	body2, err := io.ReadAll(resp2.Body)
+	if err != nil {
+		return nil, nil, err
 	}
-	streams := make([]allanimeResolvedStream, 0, len(urls))
-	for _, linkURL := range urls {
-		linkURL = strings.TrimSpace(linkURL)
-		if linkURL == "" {
-			continue
-		}
-		score := defaultScore
-		if score == 0 {
-			score = wixmpQualityScore(linkURL)
-		}
-		streams = append(streams, allanimeResolvedStream{
-			URL:          linkURL,
-			Referrer:     referrer,
-			SubtitleURL:  subtitleURL,
-			QualityScore: score,
-		})
+	if !curdhost.HTTPStatusOK(resp2.StatusCode) {
+		return nil, nil, curdhost.HTTPStatusError("anidb languages", resp2.StatusCode, body2)
 	}
-	return streams
+
+	var langRes anidbLanguagesResponse
+	if err := json.Unmarshal(body2, &langRes); err != nil {
+		return nil, nil, err
+	}
+	if len(langRes.Languages) == 0 {
+		return nil, nil, fmt.Errorf("no language embeds found for episode %d", epNo)
+	}
+
+	normalizedMode := providers.NormalizeTranslationType(mode)
+	wantCode := "jpn"
+	if normalizedMode == "dub" {
+		wantCode = "eng"
+	}
+
+	var embedURL string
+	for _, l := range langRes.Languages {
+		if strings.EqualFold(l.Code, wantCode) {
+			embedURL = l.EmbedURL
+			break
+		}
+	}
+	if embedURL == "" {
+		embedURL = langRes.Languages[0].EmbedURL
+	}
+
+	// 3. Fetch embed page to extract master.m3u8
+	req3, err := http.NewRequest("GET", embedURL, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	req3.Header.Set("User-Agent", anidbUserAgent)
+	req3.Header.Set("Referer", anidbBaseURL+"/")
+
+	resp3, err := httpClient().Do(req3)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp3.Body.Close()
+
+	body3, err := io.ReadAll(resp3.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !curdhost.HTTPStatusOK(resp3.StatusCode) {
+		return nil, nil, curdhost.HTTPStatusError("anidb embed", resp3.StatusCode, body3)
+	}
+
+	embedHTML := string(body3)
+	match := anidbEmbedMasterPattern.FindStringSubmatch(embedHTML)
+	if len(match) < 2 {
+		return nil, nil, fmt.Errorf("failed to extract master.m3u8 from embed page %s", embedURL)
+	}
+
+	masterURL := match[1]
+
+	// 4. Fetch master.m3u8 playlist to extract quality variant URLs
+	req4, err := http.NewRequest("GET", masterURL, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	req4.Header.Set("User-Agent", anidbUserAgent)
+	req4.Header.Set("Referer", anidbBaseURL+"/")
+
+	resp4, err := httpClient().Do(req4)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp4.Body.Close()
+
+	body4, err := io.ReadAll(resp4.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	links := []string{masterURL}
+	hints := map[string]providers.StreamPlaybackHint{
+		masterURL: {Referrer: anidbBaseURL + "/"},
+	}
+
+	if curdhost.HTTPStatusOK(resp4.StatusCode) {
+		lines := strings.Split(string(body4), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
+				links = append(links, line)
+				hints[line] = providers.StreamPlaybackHint{Referrer: anidbBaseURL + "/"}
+			}
+		}
+	}
+
+	return links, hints, nil
 }

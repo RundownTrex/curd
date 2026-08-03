@@ -1,180 +1,88 @@
 package allanime
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
 
 	"github.com/wraient/curd/internal/curdhost"
 	"github.com/wraient/curd/internal/providers"
 )
 
-type anime struct {
-	ID                string      `json:"_id"`
-	Name              string      `json:"name"`
-	EnglishName       string      `json:"englishName"`
-	Thumbnail         string      `json:"thumbnail"`
-	AvailableEpisodes interface{} `json:"availableEpisodes"`
-}
+const (
+	anidbUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+	anidbBaseURL   = "https://anidb.app"
+)
 
-type response struct {
-	Data struct {
-		Shows struct {
-			Edges []anime `json:"edges"`
-		} `json:"shows"`
-	} `json:"data"`
-}
-
-// func main() {
-// 	// Get environment variables
-// 	mode := "sub"
-
-// 	// Query for the anime (from a file in this example)
-// 	query := "one piece"
-
-// 	// Search anime
-// 	animeList, err := SearchAnime(string(query), mode)
-// 	if err != nil {
-
-// 	}
-// 	fmt.Println(animeList)
-// }
+var (
+	anidbSearchCardPattern = regexp.MustCompile(`(?s)<a\s+href="https://anidb\.app/anime/([^"]+)".*?alt="([^"]+)"`)
+)
 
 func searchAllAnime(query, mode string) ([]providers.SelectionOption, error) {
-	preferredMode := providers.NormalizeTranslationType(mode)
-	return searchAnimeByMode(query, preferredMode, preferredMode)
-}
-
-func searchAnimeByMode(query, mode, preferredMode string) ([]providers.SelectionOption, error) {
-	const (
-		agent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0"
-		allanimeRef  = "https://mkissa.to"
-		allanimeBase = "allanime.day"
-		allanimeAPI  = "https://api.mkissa.net/api"
-	)
-
-	mode = providers.NormalizeTranslationType(mode)
-	preferredMode = providers.NormalizeTranslationType(preferredMode)
-
-	animeList := make([]providers.SelectionOption, 0)
-
-	searchGql := `query($search: SearchInput, $limit: Int, $page: Int, $translationType: VaildTranslationTypeEnumType, $countryOrigin: VaildCountryOriginEnumType) {
-		shows(search: $search, limit: $limit, page: $page, translationType: $translationType, countryOrigin: $countryOrigin) {
-			edges {
-				_id
-				name
-				englishName
-				thumbnail
-				availableEpisodes
-				__typename
-			}
-		}
-	}`
-
-	// Prepare the GraphQL variables
-	variables := map[string]interface{}{
-		"search": map[string]interface{}{
-			"allowAdult":   false,
-			"allowUnknown": false,
-			"query":        query,
-		},
-		"limit":           40,
-		"page":            1,
-		"translationType": mode,
-		"countryOrigin":   "ALL",
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, fmt.Errorf("empty search query")
 	}
 
-	// Build POST request body
-	requestBody, err := json.Marshal(map[string]interface{}{
-		"query":     searchGql,
-		"variables": variables,
-	})
+	searchURL := fmt.Sprintf("%s/browse?q=%s", anidbBaseURL, url.QueryEscape(query))
+	req, err := http.NewRequest("GET", searchURL, nil)
 	if err != nil {
-		curdhost.Log(fmt.Sprintf("Error encoding request body to JSON: %v", err))
-		return animeList, err
+		return nil, err
 	}
-
-	// Make the HTTP POST request
-	req, err := http.NewRequest("POST", allanimeAPI, bytes.NewBuffer(requestBody))
-	if err != nil {
-		curdhost.Log(fmt.Sprintf("Error creating HTTP request: %v", err))
-		return animeList, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", agent)
-	req.Header.Set("Referer", allanimeRef)
-	req.Header.Set("Origin", allanimeRef)
+	req.Header.Set("User-Agent", anidbUserAgent)
+	req.Header.Set("Referer", anidbBaseURL+"/")
 
 	resp, err := httpClient().Do(req)
 	if err != nil {
-		curdhost.Log(fmt.Sprintf("Error making HTTP request: %v", err))
-		return animeList, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	// Read the response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		curdhost.Log(fmt.Sprintf("Error reading response body: %v", err))
-		return animeList, err
+		return nil, err
 	}
-
-	// Debug: Log the response status and first part of the body
-	curdhost.Log(fmt.Sprintf("Response Status: %s", resp.Status))
-	curdhost.Log(fmt.Sprintf("Response Body (first 500 chars): %s", string(body[:min(len(body), 500)])))
 	if !curdhost.HTTPStatusOK(resp.StatusCode) {
-		err := curdhost.HTTPStatusError("allanime search", resp.StatusCode, body)
-		curdhost.Log(err.Error())
-		return animeList, err
+		return nil, curdhost.HTTPStatusError("anidb search", resp.StatusCode, body)
 	}
 
-	// Parse the JSON response
-	var response response
-	err = json.Unmarshal(body, &response)
-	if err != nil {
-		curdhost.Log(fmt.Sprintf("Error parsing JSON for query '%s': %v\nBody: %s", query, err, string(body)))
-		return animeList, err
+	page := string(body)
+	matches := anidbSearchCardPattern.FindAllStringSubmatch(page, -1)
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no search results for %q", query)
 	}
 
-	for _, anime := range response.Data.Shows.Edges {
-		var episodesStr string
-		if episodes, ok := anime.AvailableEpisodes.(map[string]interface{}); ok {
-			if modeEpisodes, ok := episodes[mode].(float64); ok {
-				episodesStr = fmt.Sprintf("%d", int(modeEpisodes))
-			} else {
-				episodesStr = "Unknown"
-			}
-		} else {
-			episodesStr = "Unknown"
-		}
+	options := make([]providers.SelectionOption, 0, len(matches))
+	seen := make(map[string]struct{})
 
-		// Use English name if available and configured, otherwise use default name
-		displayName := anime.Name
-		if anime.EnglishName != "" && curdhost.AnimeNameLanguage != nil && curdhost.AnimeNameLanguage() == "english" {
-			displayName = anime.EnglishName
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
 		}
-
-		label := fmt.Sprintf("%s (%s episodes)", displayName, episodesStr)
-		if mode != preferredMode {
-			label = fmt.Sprintf("%s [%s]", label, mode)
+		slugID := match[1]
+		title := html.UnescapeString(strings.TrimSpace(match[2]))
+		if _, exists := seen[slugID]; exists {
+			continue
 		}
+		seen[slugID] = struct{}{}
 
-		animeList = append(animeList, providers.SelectionOption{
-			Title:     displayName,
-			Key:       anime.ID,
-			Label:     label,
-			Thumbnail: anime.Thumbnail,
+		options = append(options, providers.SelectionOption{
+			Title: title,
+			Key:   slugID,
+			Label: title,
 		})
 	}
-	return animeList, nil
+
+	if len(options) == 0 {
+		return nil, fmt.Errorf("no search results found for %q", query)
+	}
+	return options, nil
 }
 
-// Helper function
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+func logAllanime(msg string) {
+	curdhost.Log("allanime: " + msg)
 }

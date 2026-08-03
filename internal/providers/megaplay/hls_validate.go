@@ -2,6 +2,7 @@ package megaplay
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -24,8 +25,58 @@ func isAdSegmentURL(segURL string) bool {
 	return false
 }
 
-// validateHLSStream fetches the first sub-playlist from a master m3u8 and checks
-// whether the CDN has injected ad segments that will break mpv playback.
+// isMediaPlaylist reports whether the playlist text references segments
+// (#EXTINF) instead of variant streams (#EXT-X-STREAM-INF).
+func isMediaPlaylist(playlist string) bool {
+	return strings.Contains(playlist, "#EXTINF")
+}
+
+// variantPlaylistURLs extracts the sub-playlist (variant) URLs referenced by a
+// master playlist. Playlist references are lines that don't start with '#';
+// they may be absolute, root-relative, or relative to the master URL.
+func variantPlaylistURLs(master, masterURL string) []string {
+	masterParsed, err := url.Parse(masterURL)
+	if err != nil {
+		return nil
+	}
+	var urls []string
+	for _, line := range strings.Split(master, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		ref, err := url.Parse(line)
+		if err != nil {
+			continue
+		}
+		resolved := masterParsed.ResolveReference(ref)
+		if resolved.Scheme != "" && resolved.Host != "" {
+			urls = append(urls, resolved.String())
+		}
+	}
+	return urls
+}
+
+// countAdSegments counts the segments in a playlist text and how many of them
+// point at known ad CDNs.
+func countAdSegments(playlist string) (ad, total int) {
+	for _, line := range strings.Split(playlist, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		total++
+		if isAdSegmentURL(line) {
+			ad++
+		}
+	}
+	return ad, total
+}
+
+// validateHLSStream fetches the master m3u8 and checks every variant
+// sub-playlist it references for CDN-injected ad segments. The stream is only
+// rejected when every variant was fetched and every variant is ad-infected:
+// a single healthy variant means mpv can still play the episode.
 // Returns an error if the stream is unusable.
 func validateHLSStream(masterURL string) error {
 	// Fetch the master playlist.
@@ -35,55 +86,55 @@ func validateHLSStream(masterURL string) error {
 		return nil
 	}
 
-	// Find the first sub-playlist reference (lines that don't start with '#').
-	var subPlaylistPath string
-	for _, line := range strings.Split(master, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+	// A media playlist (segments, no variants) is validated directly — its
+	// segment URLs must never be fetched.
+	if isMediaPlaylist(master) {
+		adSegs, totalSegs := countAdSegments(master)
+		if totalSegs > 0 && adSegs*2 > totalSegs {
+			return fmt.Errorf(
+				"megaplay CDN is injecting ads into the HLS stream (%d/%d segments are ads). "+
+					"The stream is unplayable. Please use a different provider",
+				adSegs, totalSegs,
+			)
+		}
+		return nil
+	}
+
+	variants := variantPlaylistURLs(master, masterURL)
+	if len(variants) == 0 {
+		return nil
+	}
+
+	var healthy, adInfected, unverifiable int
+	for _, variantURL := range variants {
+		variant, fetchErr := fetchString(variantURL, megaplayBaseURL+"/")
+		if fetchErr != nil {
+			// Can't validate this variant — don't count it either way.
+			unverifiable++
 			continue
 		}
-		subPlaylistPath = line
-		break
-	}
-	if subPlaylistPath == "" {
-		return nil
-	}
-
-	// Resolve the sub-playlist URL (it may be relative).
-	subURL := subPlaylistPath
-	if !strings.HasPrefix(subURL, "http://") && !strings.HasPrefix(subURL, "https://") {
-		base := masterURL[:strings.LastIndex(masterURL, "/")+1]
-		subURL = base + subPlaylistPath
-	}
-
-	subPlaylist, err := fetchString(subURL, megaplayBaseURL+"/")
-	if err != nil {
-		return nil
-	}
-
-	// Count real vs. ad segments.
-	var totalSegs, adSegs int
-	for _, line := range strings.Split(subPlaylist, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		adSegs, totalSegs := countAdSegments(variant)
+		if totalSegs == 0 {
+			unverifiable++
 			continue
 		}
-		totalSegs++
-		if isAdSegmentURL(line) {
-			adSegs++
+		if adSegs*2 > totalSegs {
+			adInfected++
+		} else {
+			healthy++
 		}
 	}
 
-	if totalSegs == 0 {
+	// If any variant is healthy, playback can work — let mpv try.
+	if healthy > 0 {
 		return nil
 	}
-
-	// If more than half the segments are ads, the stream is broken.
-	if adSegs*2 > totalSegs {
+	// Reject only when every variant was verified and all of them are ads.
+	if adInfected > 0 && unverifiable == 0 {
 		return fmt.Errorf(
-			"megaplay CDN is injecting ads into the HLS stream (%d/%d segments are ads). "+
+			"megaplay CDN is injecting ads into the HLS stream (%d/%d variant playlists are ads). "+
 				"The stream is unplayable. Please use a different provider",
-			adSegs, totalSegs,
+			adInfected, len(variants),
 		)
 	}
 	return nil

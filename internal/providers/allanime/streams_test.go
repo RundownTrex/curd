@@ -1,139 +1,41 @@
 package allanime
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/wraient/curd/internal/providers"
 )
 
-func TestExpandWixmpLinksMatchesAniCLI(t *testing.T) {
-	t.Parallel()
-
-	input := "https://repackager.wixmp.com/video.wixstatic.com/video/4fa677_7daec0ccb9364ac7b032d43692c73617/,720p,480p,1080p,/mp4/file.mp4.urlset/master.m3u8"
-	links := expandWixmpLinks(input)
-	if len(links) != 3 {
-		t.Fatalf("expected 3 expanded links, got %d: %#v", len(links), links)
-	}
-	if !strings.HasPrefix(links[0], "https://video.wixstatic.com/video/4fa677_7daec0ccb9364ac7b032d43692c73617/1080p/mp4/file.mp4") {
-		t.Fatalf("expected 1080p wixstatic link first, got %q", links[0])
-	}
-}
-
-func TestGetLinksFromEncodedSourceUrlsSkipsUnreliableFast4speed(t *testing.T) {
-	t.Parallel()
-
-	sourceUrls := []allanimeSource{
-		{
-			SourceUrl:  "https://tools.fast4speed.rsvp/media9/videos/example/dub/1?Authorization=test",
-			SourceName: "Yt-mp4",
-			Priority:   7.9,
-		},
-	}
-
-	_, _, err := getLinksFromEncodedSourceUrls(sourceUrls)
-	if err == nil {
-		t.Fatal("expected error when only direct fast4speed source is available")
-	}
-}
-
-func TestGetLinksFromEncodedSourceUrlsUsesDirectSource(t *testing.T) {
-	t.Parallel()
-
-	sourceUrls := []allanimeSource{
-		{
-			SourceUrl:  "https://tenant.sharepoint.com/video.mp4",
-			SourceName: "S-mp4",
-			Priority:   7.4,
-		},
-	}
-
-	links, _, err := getLinksFromEncodedSourceUrls(sourceUrls)
+func TestLiveFetchAnidbSearch(t *testing.T) {
+	opts, err := searchAllAnime("one piece", "sub")
 	if err != nil {
-		t.Fatalf("getLinksFromEncodedSourceUrls() error = %v", err)
+		t.Fatalf("searchAllAnime failed: %v", err)
 	}
-	if len(links) != 1 || links[0] != sourceUrls[0].SourceUrl {
-		t.Fatalf("getLinksFromEncodedSourceUrls() = %#v, want direct source %q", links, sourceUrls[0].SourceUrl)
+	if len(opts) == 0 {
+		t.Fatal("searchAllAnime returned 0 results")
 	}
+	t.Logf("Search returned %d anime options. First: %s (Key: %s)", len(opts), opts[0].Title, opts[0].Key)
 }
 
-func TestAllanimeClockURLKeepsCurrentDefaultEndpoint(t *testing.T) {
-	t.Parallel()
-
-	got, err := allanimeClockURL("/apivtwo/clock.json?id=default-source")
+func TestLiveFetchAnidbEpisodes(t *testing.T) {
+	eps, err := getAllAnimeEpisodesList("one-piece-3880", "sub")
 	if err != nil {
-		t.Fatalf("allanimeClockURL() error = %v", err)
+		t.Fatalf("getAllAnimeEpisodesList failed: %v", err)
 	}
-	want := "https://allanime.day/apivtwo/clock.json?id=default-source"
-	if got != want {
-		t.Fatalf("allanimeClockURL() = %q, want %q", got, want)
+	if len(eps) == 0 {
+		t.Fatal("getAllAnimeEpisodesList returned 0 episodes")
 	}
+	t.Logf("Fetched %d episodes for One Piece. First: %s, Last: %s", len(eps), eps[0], eps[len(eps)-1])
 }
 
-func TestAllanimeClockURLUpgradesLegacyEndpoint(t *testing.T) {
-	t.Parallel()
-
-	got, err := allanimeClockURL("/apivtwo/clock?id=legacy-source")
+func TestLiveFetchAnidbStreams(t *testing.T) {
+	p := &Provider{}
+	links, hints, err := p.GetEpisodeURLForModeWithHints(providers.PlaybackConfig{SubOrDub: "sub"}, "one-piece-3880", 1, "sub")
 	if err != nil {
-		t.Fatalf("allanimeClockURL() error = %v", err)
-	}
-	want := "https://allanime.day/apivtwo/clock.json?id=legacy-source"
-	if got != want {
-		t.Fatalf("allanimeClockURL() = %q, want %q", got, want)
-	}
-}
-
-func TestParseAllanimeStreamInfScore(t *testing.T) {
-	t.Parallel()
-
-	line := `#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2"`
-	if got := parseAllanimeStreamInfScore(line); got != 1280 {
-		t.Fatalf("parseAllanimeStreamInfScore() = %d, want 1280", got)
-	}
-}
-
-func TestResolveAllanimeRelativeURL(t *testing.T) {
-	t.Parallel()
-
-	got := resolveAllanimeRelativeURL("https://example.com/path/", "720p/index.m3u8")
-	want := "https://example.com/path/720p/index.m3u8"
-	if got != want {
-		t.Fatalf("resolveAllanimeRelativeURL() = %q, want %q", got, want)
-	}
-}
-
-func TestGetAAReqAndDecryptTobeparsed(t *testing.T) {
-	t.Parallel()
-
-	testKeyHex := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	epoch := 6885
-	queryHash := "f4662f4b7510b26795dd53ef824a0bf1740fbbc5d1273fab18222ac831bca8d0"
-
-	aaReq, err := getAAReq(epoch, testKeyHex, queryHash)
-	if err != nil {
-		t.Fatalf("getAAReq() unexpected error = %v", err)
-	}
-	if aaReq == "" {
-		t.Fatal("getAAReq() returned empty string")
-	}
-}
-
-func TestLiveFetchMkissaSources(t *testing.T) {
-	sources, err := fetchAllanimeEpisodeSources("ReooPAxPMsHM4KPMY", "sub", 1)
-	if err != nil {
-		t.Fatalf("fetchAllanimeEpisodeSources() failed: %v", err)
-	}
-	if len(sources) == 0 {
-		t.Fatal("fetchAllanimeEpisodeSources() returned 0 sources")
-	}
-	t.Logf("Fetched %d mkissa sources successfully!", len(sources))
-}
-
-func TestLiveFetchMkissaStreams(t *testing.T) {
-	links, hints, err := getAllanimeEpisodeStreamsForMode("ReooPAxPMsHM4KPMY", "sub", 1)
-	if err != nil {
-		t.Fatalf("getAllanimeEpisodeStreamsForMode() failed: %v", err)
+		t.Fatalf("GetEpisodeURLForModeWithHints failed: %v", err)
 	}
 	if len(links) == 0 {
-		t.Fatal("getAllanimeEpisodeStreamsForMode() returned 0 links")
+		t.Fatal("GetEpisodeURLForModeWithHints returned 0 links")
 	}
 	t.Logf("Fetched %d playable stream links! First link: %s (referrer: %s)", len(links), links[0], hints[links[0]].Referrer)
 }

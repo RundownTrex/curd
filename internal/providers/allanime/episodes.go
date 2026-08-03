@@ -1,116 +1,82 @@
 package allanime
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/wraient/curd/internal/curdhost"
-	"github.com/wraient/curd/internal/providers"
 )
 
-type episodesResponse struct {
-	Data struct {
-		Show struct {
-			ID                      string                 `json:"_id"`
-			AvailableEpisodesDetail map[string]interface{} `json:"availableEpisodesDetail"`
-		} `json:"show"`
-	} `json:"data"`
+type anidbEpisodeItem struct {
+	ID     int  `json:"id"`
+	Number int  `json:"number"`
+	Filler bool `json:"filler"`
 }
 
-// func main() {
-// 	// Get environment variables
-// 	// Read the ID from the file
-// 	id := "ReooPAxPMsHM4KPMY"
+type anidbEpisodesResponse struct {
+	Episodes []anidbEpisodeItem `json:"episodes"`
+}
 
-// 	// Fetch episodes list
-// 	episodeList := episodesList(string(id), "sub")
-
-// 	// Write the episode list to a file
-// 	fmt.Println(episodeList)
-// }
-
-// episodesList performs the API call and fetches the episodes list
 func getAllAnimeEpisodesList(showID, mode string) ([]string, error) {
-	preferredMode := providers.NormalizeTranslationType(mode)
-
-	episodesListGql := `query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}`
-
-	// Build POST request body
-	requestBody, err := json.Marshal(map[string]interface{}{
-		"query":     episodesListGql,
-		"variables": map[string]string{"showId": showID},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	numericID := extractNumericID(showID)
+	if numericID == "" {
+		return nil, fmt.Errorf("invalid show id %q", showID)
 	}
 
-	// Make the HTTP POST request
-	req, err := http.NewRequest("POST", "https://api.mkissa.net/api", bytes.NewBuffer(requestBody))
+	episodesURL := fmt.Sprintf("%s/api/frontend/anime/%s/episodes", anidbBaseURL, numericID)
+	req, err := http.NewRequest("GET", episodesURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Referer", "https://mkissa.to")
-	req.Header.Set("Origin", "https://mkissa.to")
+	req.Header.Set("User-Agent", anidbUserAgent)
+	req.Header.Set("Referer", anidbBaseURL+"/")
 
 	resp, err := httpClient().Do(req)
 	if err != nil {
-		curdhost.Log(fmt.Sprint("Error making HTTP request:", err))
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		curdhost.Log(fmt.Sprint("Error reading response body:", err))
 		return nil, err
 	}
 	if !curdhost.HTTPStatusOK(resp.StatusCode) {
-		return nil, curdhost.HTTPStatusError("allanime episode list", resp.StatusCode, body)
+		return nil, curdhost.HTTPStatusError("anidb episode list", resp.StatusCode, body)
 	}
 
-	// Parse the JSON response
-	var response episodesResponse
-	err = json.Unmarshal(body, &response)
-	if err != nil {
-		curdhost.Log(fmt.Sprint("Error parsing JSON:", err))
-		return nil, err
+	var res anidbEpisodesResponse
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, fmt.Errorf("parse anidb episodes response: %w", err)
+	}
+	if len(res.Episodes) == 0 {
+		return nil, fmt.Errorf("no episodes found for anime %s", showID)
 	}
 
-	// Extract and sort the episodes
-	episodes := extractEpisodes(response.Data.Show.AvailableEpisodesDetail, preferredMode)
-	if len(episodes) == 0 {
-		return episodes, fmt.Errorf("no %s episodes found for anime %s", preferredMode, showID)
-	}
-	return episodes, nil
-}
-
-// extractEpisodes extracts the episodes list from the availableEpisodesDetail field
-func extractEpisodes(availableEpisodesDetail map[string]interface{}, mode string) []string {
-	var episodes []float64
-
-	// Check if the mode (e.g., "sub") exists in the map
-	if eps, ok := availableEpisodesDetail[mode].([]interface{}); ok {
-		for _, ep := range eps {
-			if epNum, err := strconv.ParseFloat(fmt.Sprintf("%v", ep), 64); err == nil {
-				episodes = append(episodes, epNum)
-			}
+	var numbers []int
+	for _, ep := range res.Episodes {
+		if ep.Number > 0 {
+			numbers = append(numbers, ep.Number)
 		}
 	}
+	sort.Ints(numbers)
 
-	// Sort episodes numerically
-	sort.Float64s(episodes)
-
-	// Convert to string and return
-	var episodesStr []string
-	for _, ep := range episodes {
-		episodesStr = append(episodesStr, fmt.Sprintf("%v", ep))
+	episodesStr := make([]string, 0, len(numbers))
+	for _, num := range numbers {
+		episodesStr = append(episodesStr, strconv.Itoa(num))
 	}
-	return episodesStr
+	return episodesStr, nil
+}
+
+func extractNumericID(showID string) string {
+	showID = strings.TrimSpace(showID)
+	if idx := strings.LastIndex(showID, "-"); idx >= 0 {
+		return showID[idx+1:]
+	}
+	return showID
 }
