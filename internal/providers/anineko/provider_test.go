@@ -354,3 +354,51 @@ func TestVibeProxyRewritesAndStripsSegments(t *testing.T) {
 		t.Fatalf("expected stripped mpeg-ts payload, got %v", segBody)
 	}
 }
+
+func TestCleanSubtitleURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "valid standard URL",
+			input:    "https://cdn.anizara.store/subtitles/50/95/sub.vtt",
+			expected: "https://cdn.anizara.store/subtitles/50/95/sub.vtt",
+		},
+		{
+			name:     "concatenated domain and http IP URL",
+			input:    "https://cdn.anizara.storehttp://65.109.79.102/subtitles/c5a1/136186_sub_eng-0.vtt",
+			expected: "http://65.109.79.102/subtitles/c5a1/136186_sub_eng-0.vtt",
+		},
+		{
+			name:     "concatenated domain and https URL",
+			input:    "https://cdn.anizara.storehttps://anothercdn.com/sub.vtt",
+			expected: "https://anothercdn.com/sub.vtt",
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cleanSubtitleURL(tc.input)
+			if got != tc.expected {
+				t.Fatalf("cleanSubtitleURL(%q) = %q, expected %q", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestSubtitleFromEmbedURLHandlesMalformedConcatenatedURL(t *testing.T) {
+	embedURL := "https://bibiemb.xyz/ag2f7ca8e0187a319a89e86e6f9635023b4h?sub=https://cdn.anizara.storehttp://65.109.79.102/subtitles/c5a16f96b336202b9e36b69761615616/136186_sub_eng-0.vtt"
+	expected := "http://65.109.79.102/subtitles/c5a16f96b336202b9e36b69761615616/136186_sub_eng-0.vtt"
+	got := subtitleFromEmbedURL(embedURL)
+	if got != expected {
+		t.Fatalf("subtitleFromEmbedURL(%q) = %q, expected %q", embedURL, got, expected)
+	}
+}
+

@@ -72,6 +72,27 @@ func resolveEmbedHost(embedURL string) string {
 	}
 }
 
+func cleanSubtitleURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+
+	lastHTTP := strings.LastIndex(rawURL, "http://")
+	lastHTTPS := strings.LastIndex(rawURL, "https://")
+
+	lastIdx := lastHTTP
+	if lastHTTPS > lastIdx {
+		lastIdx = lastHTTPS
+	}
+
+	if lastIdx > 0 {
+		rawURL = rawURL[lastIdx:]
+	}
+
+	return rawURL
+}
+
 func subtitleFromEmbedURL(embedURL string) string {
 	parsed, err := url.Parse(embedURL)
 	if err != nil {
@@ -82,9 +103,9 @@ func subtitleFromEmbedURL(embedURL string) string {
 		case "sub", "caption_1", "c1_file":
 			if len(values) > 0 {
 				if decoded, err := url.QueryUnescape(values[0]); err == nil {
-					return decoded
+					return cleanSubtitleURL(decoded)
 				}
-				return values[0]
+				return cleanSubtitleURL(values[0])
 			}
 		}
 	}
@@ -93,9 +114,9 @@ func subtitleFromEmbedURL(embedURL string) string {
 		return ""
 	}
 	if decoded, err := url.QueryUnescape(match[1]); err == nil {
-		return decoded
+		return cleanSubtitleURL(decoded)
 	}
-	return match[1]
+	return cleanSubtitleURL(match[1])
 }
 
 func subtitleFromEmbedHTML(html string) string {
@@ -105,11 +126,11 @@ func subtitleFromEmbedHTML(html string) string {
 	}
 	if match := embedSubtitleRE.FindStringSubmatch(html); len(match) >= 2 {
 		if subtitle := strings.TrimSpace(match[1]); subtitle != "" {
-			return subtitle
+			return cleanSubtitleURL(subtitle)
 		}
 	}
 	if match := embedTrackFileRE.FindStringSubmatch(html); len(match) >= 2 {
-		return strings.TrimSpace(match[1])
+		return cleanSubtitleURL(strings.TrimSpace(match[1]))
 	}
 	return ""
 }
