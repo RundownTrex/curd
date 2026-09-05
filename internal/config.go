@@ -78,7 +78,7 @@ func defaultConfigMap() map[string]string {
 		"DownloadPath":             "$HOME",
 		"AnimeNameLanguage":        "english",
 		"SubsLanguage":             "english",
-		"MenuOrder":                "CURRENT,ALL,UNTRACKED,UPDATE,DOWNLOAD,CONTINUE_LAST",
+		"MenuOrder":                "CURRENT,ALL,UNTRACKED,UPDATE,DOWNLOAD,CONTINUE_LAST,PROVIDER",
 		"TrackingService":          "mal",
 		"DualTracking":             "true",
 		"SubOrDub":                 "sub",
@@ -602,7 +602,7 @@ func PopulateConfig(configMap map[string]string) CurdConfig {
 
 func getOrderedCategories(userCurdConfig *CurdConfig) []SelectionOption {
 	// Define the default categories and their labels
-	defaultOrder := []string{"CURRENT", "ALL", "UNTRACKED", "UPDATE", "DOWNLOAD", "CONTINUE_LAST"}
+	defaultOrder := []string{"CURRENT", "ALL", "UNTRACKED", "UPDATE", "DOWNLOAD", "CONTINUE_LAST", "PROVIDER"}
 	defaultLabels := map[string]string{
 		"CURRENT":        "Currently Watching",
 		"ALL":            "Show All",
@@ -610,6 +610,7 @@ func getOrderedCategories(userCurdConfig *CurdConfig) []SelectionOption {
 		"UPDATE":         "Update (Episode, Status, Score)",
 		"DOWNLOAD":       "Download Episodes",
 		"CONTINUE_LAST":  "Continue Last Session",
+		"PROVIDER":       "Change Provider",
 	}
 
 	// Create ordered list to store final result

@@ -31,6 +31,11 @@ func getEpisodeStreamsForMode(slug string, config providers.PlaybackConfig, epNo
 		return nil, nil, fmt.Errorf("no %s streams found for episode %d", mode, epNo)
 	}
 
+	var (
+		allLinks []string
+		allHints = make(map[string]providers.StreamPlaybackHint)
+	)
+
 	for _, embedURL := range embedURLs {
 		var (
 			stream resolvedStream
@@ -44,13 +49,23 @@ func getEpisodeStreamsForMode(slug string, config providers.PlaybackConfig, epNo
 		default:
 			continue
 		}
-		if err != nil {
+		if err != nil || strings.TrimSpace(stream.URL) == "" {
 			continue
 		}
-		return singleStreamResult(stream)
+		if _, exists := allHints[stream.URL]; !exists {
+			allLinks = append(allLinks, stream.URL)
+			allHints[stream.URL] = providers.StreamPlaybackHint{
+				Referrer: stream.Referrer,
+				Subtitle: stream.Subtitle,
+			}
+		}
 	}
 
-	return nil, nil, fmt.Errorf("no playable streams resolved for episode %d", epNo)
+	if len(allLinks) == 0 {
+		return nil, nil, fmt.Errorf("no playable streams resolved for episode %d", epNo)
+	}
+
+	return allLinks, allHints, nil
 }
 
 func singleStreamResult(stream resolvedStream) ([]string, map[string]providers.StreamPlaybackHint, error) {

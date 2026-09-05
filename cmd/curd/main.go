@@ -311,13 +311,14 @@ func main() {
 				return
 			}
 			internal.Log(fmt.Sprintf("Retry: user selected provider: %s (current: %s)", selectedProvider, anime.ProviderName))
-			internal.CurdOut(fmt.Sprintf("\033[1;36mUser explicitly selected provider: %s\033[0m", selectedProvider))
+			internal.CurdOut(fmt.Sprintf("\033[1;36mUser explicitly selected provider: %s\033[0m", internal.ProviderDisplayName(selectedProvider)))
 			if selectedProvider != anime.ProviderName {
 				anime.ProviderName = selectedProvider
 				anime.ProviderId = ""                         // Force re-search on the chosen provider
 				anime.Ep.NextEpisode = internal.NextEpisode{} // Clear any prefetched episode from the old provider
 			}
-			userCurdConfig.Provider = selectedProvider
+			userCurdConfig.Provider = internal.CanonicalProviderConfigValue(selectedProvider)
+			internal.CurrentProvider = nil
 			anime.Ep.Links = nil // Clear old links so they are re-fetched
 
 			// Set to false so that the link-fetching block below executes
@@ -413,6 +414,9 @@ func main() {
 					}
 					anime.Ep.Links = result.Links
 					internal.ApplyStreamPlaybackHints(&anime, anime.Ep.Links, result.LinkHints)
+					if anime.ProviderId != "" {
+						internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, anime.Ep.Player.PlaybackTime, internal.ConvertSecondsToMinutes(anime.Ep.Duration), internal.GetAnimeName(anime), anime.ProviderName)
+					}
 				}
 
 

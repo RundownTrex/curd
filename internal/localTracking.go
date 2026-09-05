@@ -318,6 +318,17 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 	var query string
 	var anime Anime
 
+	// Prompt user to select a provider for this session
+	selectedProvider := PromptProviderSelection()
+	if selectedProvider == "" {
+		ExitCurd(nil)
+		return
+	}
+	Log(fmt.Sprintf("User selected provider: %s", selectedProvider))
+	CurdOut(fmt.Sprintf("\033[1;36mUser explicitly selected provider: %s\033[0m", ProviderDisplayName(selectedProvider)))
+	userCurdConfig.Provider = canonicalProviderConfigValue(selectedProvider)
+	CurrentProvider = nil
+
 	// Anime search and selection loop
 	for {
 		// Get anime name from user
@@ -362,21 +373,6 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 		break
 	}
 
-	// Prompt user to select a provider for this session
-	selectedProvider := PromptProviderSelection()
-	if selectedProvider == "" {
-		ExitCurd(nil)
-		return
-	}
-	Log(fmt.Sprintf("User selected provider: %s (current: %s)", selectedProvider, anime.ProviderName))
-	CurdOut(fmt.Sprintf("\033[1;36mUser explicitly selected provider: %s\033[0m", selectedProvider))
-	if selectedProvider != anime.ProviderName {
-		anime.ProviderName = selectedProvider
-		anime.ProviderId = "" // Force re-search on the chosen provider
-		Log(fmt.Sprintf("Switched provider to %s, will search for anime on new provider", selectedProvider))
-	}
-	userCurdConfig.Provider = selectedProvider
-
 	// Get episode number
 	var episodeNumber int
 	if userCurdConfig.RofiSelection {
@@ -413,10 +409,13 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 		anime.Ep.Links = link
 		applyStreamPlaybackHints(&anime, anime.Ep.Links, result.LinkHints)
 
+		selectedLink := PrioritizeLink(link)
+		Log(fmt.Sprintf("Resolved episode %d via %s (%s) with %d link(s). Playing: %s (ref: %q, sub: %q)", anime.Ep.Number, result.ProviderName, result.Mode, len(link), selectedLink, anime.Ep.StreamReferrer, anime.Ep.SubtitleURL))
+
 		CurdOut(fmt.Sprintf("%s - Episode %d", GetAnimeName(anime), anime.Ep.Number))
 
 		// Start video playback
-		mpvSocketPath, err := StartVideo(PrioritizeLink(link), []string{}, fmt.Sprintf("%s - Episode %d", GetAnimeName(anime), anime.Ep.Number), &anime)
+		mpvSocketPath, err := StartVideo(selectedLink, []string{}, fmt.Sprintf("%s - Episode %d", GetAnimeName(anime), anime.Ep.Number), &anime)
 		if err != nil {
 			Log("Failed to start mpv")
 			os.Exit(1)

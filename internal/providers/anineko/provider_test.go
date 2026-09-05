@@ -71,6 +71,55 @@ func TestSearchAnimeParsesResults(t *testing.T) {
 	}
 }
 
+func TestCleanSearchQuery(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"Frieren: Beyond Journey's End", "Frieren Beyond Journeys End"},
+		{"Steins;Gate 0", "Steins Gate 0"},
+		{"Bocchi the Rock!", "Bocchi the Rock"},
+		{"Kaguya-sama: Love is War", "Kaguya sama Love is War"},
+		{"Re:Zero", "Re Zero"},
+		{"Fate/stay night", "Fate stay night"},
+	}
+
+	for _, tc := range tests {
+		got := cleanSearchQuery(tc.input)
+		if got != tc.expected {
+			t.Errorf("cleanSearchQuery(%q) = %q, want %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
+func TestSearchAnimeSanitizesPunctuation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("q")
+		if q != "Frieren Beyond Journeys End" {
+			t.Fatalf("expected sanitized query 'Frieren Beyond Journeys End', got %q", q)
+		}
+		_, _ = io.WriteString(w, `{"success":true,"results":[{"title":"Frieren: Beyond Journey's End","url":"/watch/frieren-beyond-journeys-end","image":"/img/frieren.jpg","meta":"TV"}]}`)
+	}))
+	defer server.Close()
+
+	withAninekoTestClient(t, server.Client())
+	originalBase := baseURL
+	t.Cleanup(func() { baseURL = originalBase })
+	baseURL = server.URL
+
+	options, err := searchAnime("Frieren: Beyond Journey's End", "sub")
+	if err != nil {
+		t.Fatalf("searchAnime: %v", err)
+	}
+	if len(options) != 1 {
+		t.Fatalf("expected 1 option, got %d", len(options))
+	}
+	if options[0].Key != "frieren-beyond-journeys-end" {
+		t.Fatalf("unexpected key %q", options[0].Key)
+	}
+}
+
+
 func TestEpisodesListParsesEpisodeLinks(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `<a href="/watch/frieren/ep-1">1</a><a href="/watch/frieren/ep-12">12</a>`)
@@ -235,6 +284,14 @@ func TestResolveBibiembPicks1080pVariant(t *testing.T) {
 `+server.URL+`/`+hash+`/720p/index.m3u8
 #EXT-X-STREAM-INF:BANDWIDTH=2,NAME="1080p"
 `+server.URL+`/`+hash+`/1080p/index.m3u8`)
+		case r.URL.Path == "/"+hash+"/1080p/index.m3u8":
+			_, _ = io.WriteString(w, `#EXTM3U
+#EXT-X-VERSION:3
+#EXTINF:10.0,
+`+server.URL+`/`+hash+`/1080p/seg.ts`)
+		case r.URL.Path == "/"+hash+"/1080p/seg.ts":
+			w.Header().Set("Content-Type", "video/mp2t")
+			_, _ = w.Write([]byte{0x47, 0x01, 0x02, 0x03})
 		default:
 			http.NotFound(w, r)
 		}
@@ -401,4 +458,5 @@ func TestSubtitleFromEmbedURLHandlesMalformedConcatenatedURL(t *testing.T) {
 		t.Fatalf("subtitleFromEmbedURL(%q) = %q, expected %q", embedURL, got, expected)
 	}
 }
+
 

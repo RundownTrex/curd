@@ -157,14 +157,23 @@ func providerConfigDisplayLabel(raw string) string {
 		if len(names) == 0 {
 			return "Default with fallback"
 		}
-		return fmt.Sprintf("Default with fallback (%s)", strings.Join(names, " → "))
+		displayNames := make([]string, len(names))
+		for i, n := range names {
+			displayNames[i] = ProviderDisplayName(n)
+		}
+		return fmt.Sprintf("Default with fallback (%s)", strings.Join(displayNames, " → "))
 	}
 	names, _ := parseProviderConfig(raw)
 	if len(names) == 1 {
-		return names[0]
+		return ProviderDisplayName(names[0])
 	}
 	if len(names) > 1 {
-		return strings.Join(names, " → ")
+		displayNames := make([]string, len(names))
+		for i, n := range names {
+			displayNames[i] = ProviderDisplayName(n)
+		}
+		return strings.Join(displayNames, " → ")
 	}
 	return raw
 }
+

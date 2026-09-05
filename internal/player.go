@@ -299,10 +299,40 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 	}
 	args = normalizeReferrerArgs(args)
 
+	// Provider-specific adjustments for KickAssAnime / krussdomi streams:
+	// 1. Krussdomi CDN segments require an Origin header matching the player origin to avoid HTTP 403.
+	// 2. Krussdomi uses .jpg for HLS video chunks, requiring allowed_segment_extensions=ALL and extension_picky=0.
+	providerName := strings.ToLower(CurrentAnimeProviderName(anime))
+	isKickAss := providerName == "kickassanime" || strings.Contains(link, "krussdomi.com")
+	if isKickAss {
+		origin := "https://krussdomi.com"
+		if referrer != "" {
+			if u, err := url.Parse(referrer); err == nil && u.Scheme != "" && u.Host != "" {
+				origin = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
+			}
+		}
+		args = append(args,
+			fmt.Sprintf("--http-header-fields=Origin: %s", origin),
+			"--demuxer-lavf-o=allowed_segment_extensions=ALL,extension_picky=0",
+		)
+	}
+
 	// Check if we have an existing socket and if MPV is still running
 	if anime.Ep.Player.SocketPath != "" && IsMPVRunning(anime.Ep.Player.SocketPath) {
 		// Reuse existing socket
 		mpvSocketPath = anime.Ep.Player.SocketPath
+
+		if isKickAss {
+			origin := "https://krussdomi.com"
+			activeRef := strings.TrimSpace(anime.Ep.StreamReferrer)
+			if activeRef != "" {
+				if u, err := url.Parse(activeRef); err == nil && u.Scheme != "" && u.Host != "" {
+					origin = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
+				}
+			}
+			_, _ = MPVSendCommand(mpvSocketPath, []interface{}{"set_property", "http-header-fields", fmt.Sprintf("Origin: %s", origin)})
+			_, _ = MPVSendCommand(mpvSocketPath, []interface{}{"set_property", "demuxer-lavf-o", "allowed_segment_extensions=ALL,extension_picky=0"})
+		}
 
 		if shouldSetDefaultReferrer {
 			activeReferrer := strings.TrimSpace(anime.Ep.StreamReferrer)

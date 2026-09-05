@@ -826,7 +826,13 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 			}
 
 			// Handle options
-			if categorySelection.Key == "UPDATE" {
+			if categorySelection.Key == "PROVIDER" {
+				ClearScreen()
+				ChangeProvider(userCurdConfig)
+				ClearScreen()
+				SetupCurd(userCurdConfig, anime, user, databaseAnimes, databaseFile)
+				return
+			} else if categorySelection.Key == "UPDATE" {
 				ClearScreen()
 				goBack := UpdateAnimeEntry(userCurdConfig, user)
 				if goBack {
@@ -986,6 +992,12 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 	anime.CoverImage = selectedAnilistAnime.CoverImage
 	anime.Ep.Number = selectedAnilistAnime.Progress + 1
 	userQuery = anime.Title.Romaji
+	if userQuery == "" {
+		userQuery = anime.Title.English
+	}
+	if userQuery == "" {
+		userQuery = GetAnimeName(*anime)
+	}
 
 	// Find anime in Local history
 	animePointer := LocalFindAnime(*databaseAnimes, anime.AnilistId, "")
@@ -1000,6 +1012,22 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 			anime.Ep.Resume = true
 		}
 	}
+
+	// Prompt user to select a provider for this session
+	selectedProvider := PromptProviderSelection()
+	if selectedProvider == "" {
+		ExitCurd(nil)
+		return
+	}
+	Log(fmt.Sprintf("User selected provider: %s (current: %s)", selectedProvider, anime.ProviderName))
+	CurdOut(fmt.Sprintf("\033[1;36mUser explicitly selected provider: %s\033[0m", ProviderDisplayName(selectedProvider)))
+	if selectedProvider != anime.ProviderName {
+		anime.ProviderName = selectedProvider
+		anime.ProviderId = "" // Force re-search on the chosen provider
+		Log(fmt.Sprintf("Switched provider to %s, will search for anime on new provider", selectedProvider))
+	}
+	userCurdConfig.Provider = canonicalProviderConfigValue(selectedProvider)
+	CurrentProvider = nil
 
 	// If ProviderId is missing, resolve provider mapping
 	if anime.ProviderId == "" {
@@ -1018,20 +1046,6 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 			Log(fmt.Sprintf("Warning: Failed to save anime selection to database: %v", err))
 		}
 	}
-	// Prompt user to select a provider for this session
-	selectedProvider := PromptProviderSelection()
-	if selectedProvider == "" {
-		ExitCurd(nil)
-		return
-	}
-	Log(fmt.Sprintf("User selected provider: %s (current: %s)", selectedProvider, anime.ProviderName))
-	CurdOut(fmt.Sprintf("\033[1;36mUser explicitly selected provider: %s\033[0m", selectedProvider))
-	if selectedProvider != anime.ProviderName {
-		anime.ProviderName = selectedProvider
-		anime.ProviderId = "" // Force re-search on the chosen provider
-		Log(fmt.Sprintf("Switched provider to %s, will search for anime on new provider", selectedProvider))
-	}
-	userCurdConfig.Provider = selectedProvider
 
 	// If anime is not in watching list, prompt user to add it into watching list
 	isInWatchingList := false
@@ -1230,7 +1244,9 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 		os.Exit(1)
 	}
 
-	if (anime.Ep.NextEpisode.Number == anime.Ep.Number) && (len(anime.Ep.NextEpisode.Links) > 0) {
+	if len(anime.Ep.Links) > 0 {
+		Log(fmt.Sprintf("Using existing episode links: count %d", len(anime.Ep.Links)))
+	} else if (anime.Ep.NextEpisode.Number == anime.Ep.Number) && (len(anime.Ep.NextEpisode.Links) > 0) {
 		anime.Ep.Links = anime.Ep.NextEpisode.Links
 		if anime.Ep.NextEpisode.ProviderName != "" {
 			anime.ProviderName = anime.Ep.NextEpisode.ProviderName
@@ -1850,3 +1866,34 @@ func PromptTryAnotherProvider(userCurdConfig *CurdConfig) bool {
 	}
 	return false
 }
+
+// ChangeProvider allows the user to switch the anime provider
+func ChangeProvider(userCurdConfig *CurdConfig) {
+	options := providerSelectionOptions()
+	if len(options) == 0 {
+		CurdOut("\nNo providers are currently enabled.\n")
+		return
+	}
+
+	selected, err := DynamicSelect(options)
+	if err != nil || selected.Key == "-1" || selected.Key == "-2" {
+		return
+	}
+
+	// Update the config
+	providerValue := canonicalProviderConfigValue(selected.Key)
+	userCurdConfig.Provider = providerValue
+	CurrentProvider = nil // reset the provider instance
+
+	// Save to config file
+	configPath := GlobalConfigPath
+	configMap, err := LoadConfigFromFile(configPath)
+	if err == nil {
+		configMap["Provider"] = providerValue
+		_ = SaveConfigToFile(configPath, configMap)
+	}
+
+	CurdOut(fmt.Sprintf("\nProvider successfully changed to %s.\n", providerConfigDisplayLabel(userCurdConfig.Provider)))
+	time.Sleep(1 * time.Second)
+}
+

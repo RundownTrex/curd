@@ -20,16 +20,18 @@ type searchResponse struct {
 	} `json:"results"`
 }
 
-var slugFromPathRE = regexp.MustCompile(`/watch/([^/?#]+)`)
+var (
+	slugFromPathRE      = regexp.MustCompile(`/watch/([^/?#]+)`)
+	searchPunctuationRE = regexp.MustCompile(`[:;?!/&()#"@\-_]+`)
+)
 
-func searchAnime(query, mode string) ([]providers.SelectionOption, error) {
-	query = strings.TrimSpace(query)
-	// anineko's search API fails to find results if the query contains an apostrophe
+func cleanSearchQuery(query string) string {
 	query = strings.ReplaceAll(query, "'", "")
-	if query == "" {
-		return nil, fmt.Errorf("empty search query")
-	}
+	query = searchPunctuationRE.ReplaceAllString(query, " ")
+	return strings.Join(strings.Fields(query), " ")
+}
 
+func doSearchAnime(query string) ([]providers.SelectionOption, error) {
 	rawURL := fmt.Sprintf("%s/ajax/search?q=%s", baseURL, url.QueryEscape(query))
 	body, err := fetchString(rawURL, baseURL+"/")
 	if err != nil {
@@ -61,10 +63,46 @@ func searchAnime(query, mode string) ([]providers.SelectionOption, error) {
 			Thumbnail: absoluteURL(result.Image),
 		})
 	}
-	if len(options) == 0 {
-		return nil, fmt.Errorf("no results for %q", query)
-	}
 	return options, nil
+}
+
+func searchAnime(query, mode string) ([]providers.SelectionOption, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, fmt.Errorf("empty search query")
+	}
+
+	cleanQuery := cleanSearchQuery(query)
+	if cleanQuery == "" {
+		cleanQuery = query
+	}
+
+	options, err := doSearchAnime(cleanQuery)
+	if err == nil && len(options) > 0 {
+		return options, nil
+	}
+
+	// If cleaned query differed from raw query, try original query as fallback
+	if cleanQuery != query {
+		if rawOptions, rawErr := doSearchAnime(query); rawErr == nil && len(rawOptions) > 0 {
+			return rawOptions, nil
+		}
+	}
+
+	// Try prefix before colon or dash if available (e.g. "Title: Subtitle" -> "Title")
+	if idx := strings.IndexAny(query, ":-"); idx > 0 {
+		prefix := cleanSearchQuery(query[:idx])
+		if prefix != "" && prefix != cleanQuery {
+			if prefixOptions, prefixErr := doSearchAnime(prefix); prefixErr == nil && len(prefixOptions) > 0 {
+				return prefixOptions, nil
+			}
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("no results for %q", query)
 }
 
 func slugFromWatchURL(watchPath string) string {

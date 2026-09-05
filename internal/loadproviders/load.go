@@ -6,6 +6,7 @@ import (
 	_ "github.com/wraient/curd/internal/providers/anidb"
 	_ "github.com/wraient/curd/internal/providers/anineko"
 	_ "github.com/wraient/curd/internal/providers/anipub"
+	_ "github.com/wraient/curd/internal/providers/kickassanime"
 	_ "github.com/wraient/curd/internal/providers/megaplay"
 	_ "github.com/wraient/curd/internal/providers/senshi"
 )

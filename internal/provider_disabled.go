@@ -109,7 +109,7 @@ func filterEnabledProviders(names []string) []string {
 	return enabled
 }
 
-var preferredProviderOrder = []string{"senshi", "anidb", "anipub", "megaplay", "anineko", "mkissa"}
+var preferredProviderOrder = []string{"senshi", "anidb", "anineko", "anipub", "kickassanime", "megaplay", "mkissa"}
 
 func defaultEnabledProviderStack() []string {
 	registered := providers.RegisteredNames()
@@ -152,7 +152,7 @@ func providerSelectionOptions() []SelectionOption {
 	for _, name := range enabled {
 		options = append(options, SelectionOption{
 			Key:   formatProviderConfigValue([]string{name}, false),
-			Label: name,
+			Label: ProviderDisplayName(name),
 		})
 	}
 	return options

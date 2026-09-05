@@ -120,6 +120,10 @@ func ConfiguredProviderNames(config *CurdConfig) []string {
 	return configuredProviderNames(config)
 }
 
+func CanonicalProviderConfigValue(rawProvider string) string {
+	return canonicalProviderConfigValue(rawProvider)
+}
+
 func canonicalProviderConfigValue(rawProvider string) string {
 	rawProvider = strings.TrimSpace(rawProvider)
 	if isStackedProviderConfig(rawProvider) {
@@ -210,22 +214,58 @@ func GetProvider() Provider {
 	return CurrentProvider
 }
 
+// ProviderDisplayName returns a user-friendly display name for a provider.
+func ProviderDisplayName(name string) string {
+	switch strings.ToLower(normalizeProviderName(name)) {
+	case "anineko":
+		return "AniNeko"
+	case "anidb":
+		return "AniDB"
+	case "anipub":
+		return "AniPub"
+	case "kickassanime":
+		return "KickAssAnime"
+	case "megaplay":
+		return "MegaPlay"
+	case "senshi":
+		return "Senshi"
+	case "allanime", "mkissa":
+		return "Mkissa"
+	default:
+		norm := normalizeProviderName(name)
+		if len(norm) > 0 {
+			return strings.ToUpper(norm[:1]) + norm[1:]
+		}
+		return name
+	}
+}
+
 // PromptProviderSelection presents a menu of all registered providers (unless explicitly disabled)
 // and returns the name of the provider the user selected. If only one provider is
 // available or the user cancels, it returns the first enabled provider name.
 func PromptProviderSelection() string {
-	allNames := providers.RegisteredNames()
-	options := make([]SelectionOption, 0, len(allNames))
-	for _, name := range allNames {
+	orderedNames := defaultEnabledProviderStack()
+	registered := providers.RegisteredNames()
+	seen := make(map[string]struct{}, len(orderedNames))
+	for _, n := range orderedNames {
+		seen[n] = struct{}{}
+	}
+	for _, r := range registered {
+		if _, ok := seen[r]; !ok {
+			orderedNames = append(orderedNames, r)
+		}
+	}
+
+	options := make([]SelectionOption, 0, len(orderedNames))
+	for _, name := range orderedNames {
 		// Show all providers, ignoring DefaultDisabled so the user can manually select them,
 		// but skip them if the user explicitly added them to DisabledProviders in config.
 		if configDisabledProviderReason(name) != "" {
 			continue
 		}
-		label := strings.ToUpper(name[:1]) + name[1:] // Capitalize
 		options = append(options, SelectionOption{
 			Key:   name,
-			Label: label,
+			Label: ProviderDisplayName(name),
 		})
 	}
 
