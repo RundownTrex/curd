@@ -31,7 +31,7 @@ jobs:
           go-version: '1.21'
 
       - name: Install Dependencies
-        run: go mod tidy
+        run: go mod download
 
       - name: Install Tools
         run: |
