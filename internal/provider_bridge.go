@@ -57,6 +57,13 @@ func init() {
 		}
 		return "english"
 	}
+	curdhost.SearchAniListTitles = func(query string) (string, string, error) {
+		titles, err := SearchAniListTitles(query)
+		if err != nil {
+			return "", "", err
+		}
+		return titles.English, titles.Romaji, nil
+	}
 }
 
 func normalizeTranslationType(mode string) string {

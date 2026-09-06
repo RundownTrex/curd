@@ -419,10 +419,8 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 	}
 	// Link will be added at the end
 
-	// Detect Android strictly from GOOS to avoid false positives from PATH binaries.
-	isAndroid := runtime.GOOS == "android"
-
-	if isAndroid {
+	// Detect Android environment (runtime.GOOS == "android" or Termux environment)
+	if IsAndroid() {
 		amBinary, resolveErr := resolveExecutable("/system/bin/am")
 		if resolveErr != nil {
 			amBinary, resolveErr = resolveExecutable("am")
@@ -432,14 +430,7 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 			}
 		}
 
-		// Only use MPV on Android via intent
-		cmdArgs := []string{
-			"start", "--user", "0",
-			"-a", "android.intent.action.VIEW",
-			"-d", link,
-			"-n", "is.xyz.mpv/.MPVActivity",
-		}
-
+		cmdArgs := BuildAndroidIntentCommand(userConfig, link, title)
 		command = exec.Command(amBinary, cmdArgs...)
 		err = command.Start()
 		if err != nil {

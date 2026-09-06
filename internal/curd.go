@@ -758,14 +758,34 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		anilistUserDataPreview, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, true)
 		if err != nil {
 			Log(fmt.Sprintf("Failed to get user data preview: %v", err))
-			ExitCurd(fmt.Errorf("Failed to get user data preview"))
+			if userCurdConfig.DualTracking && user.MalToken != "" {
+				CurdOut("AniList user data request failed. Falling back to MyAnimeList for this session.")
+				userCurdConfig.TrackingService = "mal"
+				userCurdConfig.DualTracking = false
+				user.Token = user.MalToken
+				user.Id, user.Username, _ = GetUserIDUnified(user.Token, userCurdConfig)
+				anilistUserDataPreview, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, true)
+			}
+			if err != nil {
+				ExitCurd(fmt.Errorf("Failed to get user data preview"))
+			}
 		}
 		user.AnimeList = ParseAnimeList(anilistUserDataPreview)
 	} else {
 		anilistUserData, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, false)
 		if err != nil {
 			Log(fmt.Sprintf("Failed to get user data: %v", err))
-			ExitCurd(fmt.Errorf("Failed to get user data from %s", GetServiceName(userCurdConfig)))
+			if userCurdConfig.DualTracking && user.MalToken != "" {
+				CurdOut("AniList user data request failed. Falling back to MyAnimeList for this session.")
+				userCurdConfig.TrackingService = "mal"
+				userCurdConfig.DualTracking = false
+				user.Token = user.MalToken
+				user.Id, user.Username, _ = GetUserIDUnified(user.Token, userCurdConfig)
+				anilistUserData, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, false)
+			}
+			if err != nil {
+				ExitCurd(fmt.Errorf("Failed to get user data from %s", GetServiceName(userCurdConfig)))
+			}
 		}
 		user.AnimeList = ParseAnimeList(anilistUserData)
 	}
@@ -991,12 +1011,19 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 	anime.TotalEpisodes = selectedAnilistAnime.Media.Episodes
 	anime.CoverImage = selectedAnilistAnime.CoverImage
 	anime.Ep.Number = selectedAnilistAnime.Progress + 1
-	userQuery = anime.Title.Romaji
+	userQuery = GetAnimeName(*anime)
 	if userQuery == "" {
-		userQuery = anime.Title.English
-	}
-	if userQuery == "" {
-		userQuery = GetAnimeName(*anime)
+		if userCurdConfig.AnimeNameLanguage == "romaji" {
+			userQuery = anime.Title.Romaji
+			if userQuery == "" {
+				userQuery = anime.Title.English
+			}
+		} else {
+			userQuery = anime.Title.English
+			if userQuery == "" {
+				userQuery = anime.Title.Romaji
+			}
+		}
 	}
 
 	// Find anime in Local history

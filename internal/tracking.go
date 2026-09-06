@@ -322,5 +322,13 @@ func IsAniListServiceUnavailable(err error) bool {
 
 	errMsg := strings.ToLower(err.Error())
 	return strings.Contains(errMsg, "anilist api has been temporarily disabled") ||
-		strings.Contains(errMsg, "temporarily disabled due to severe stability issues")
+		strings.Contains(errMsg, "temporarily disabled due to severe stability issues") ||
+		strings.Contains(errMsg, "status 502") ||
+		strings.Contains(errMsg, "status 503") ||
+		strings.Contains(errMsg, "status 504") ||
+		strings.Contains(errMsg, "504 gateway") ||
+		strings.Contains(errMsg, "gateway timeout") ||
+		strings.Contains(errMsg, "bad gateway") ||
+		strings.Contains(errMsg, "service unavailable")
 }
+

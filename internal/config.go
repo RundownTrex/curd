@@ -12,11 +12,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/pkg/browser"
 )
 
 const (
@@ -67,11 +66,14 @@ type CurdConfig struct {
 	DisabledProviders        string   `config:"DisabledProviders"`
 	ManualProviderSearch     bool     `config:"ManualProviderSearch"`
 	SubStyle                 string   `config:"SubStyle"`
+	AndroidPlayerPackage     string   `config:"AndroidPlayerPackage"`
+	AndroidPlayerActivity    string   `config:"AndroidPlayerActivity"`
+	AndroidUseTermuxAPI      bool     `config:"AndroidUseTermuxAPI"`
 }
 
 // Default configuration values as a map
 func defaultConfigMap() map[string]string {
-	return map[string]string{
+	defaults := map[string]string{
 		"Player":                   "mpv",
 		"MpvArgs":                  "[]",
 		"StoragePath":              "$HOME/.local/share/curd",
@@ -100,7 +102,19 @@ func defaultConfigMap() map[string]string {
 		"DisabledProviders":        "[]",
 		"ManualProviderSearch":     "false",
 		"SubStyle":                 "ask",
+		"AndroidPlayerPackage":     "is.xyz.mpv",
+		"AndroidPlayerActivity":    ".MPVActivity",
+		"AndroidUseTermuxAPI":      "true",
 	}
+
+	if IsAndroid() {
+		defaults["RofiSelection"] = "false"
+		defaults["ImagePreview"] = "false"
+		defaults["DiscordPresence"] = "false"
+		defaults["AlternateScreen"] = "false"
+	}
+
+	return defaults
 }
 
 var globalConfig *CurdConfig
@@ -135,6 +149,52 @@ func parseStringArray(value string) []string {
 		}
 	}
 	return result
+}
+
+// DefaultConfigPath returns the default configuration file path based on the operating platform.
+// On Android/Termux, it prefers ~/.config/curd/android.conf, falling back to curd.conf if present.
+func DefaultConfigPath() string {
+	var homeDir string
+	if runtime.GOOS == "windows" {
+		homeDir = os.Getenv("USERPROFILE")
+	} else {
+		homeDir = os.Getenv("HOME")
+	}
+
+	curdDir := filepath.Join(homeDir, ".config", "curd")
+	if IsAndroid() {
+		androidPath := filepath.Join(curdDir, "android.conf")
+		curdPath := filepath.Join(curdDir, "curd.conf")
+		if _, err := os.Stat(androidPath); err == nil {
+			return androidPath
+		}
+		if _, err := os.Stat(curdPath); err == nil {
+			return curdPath
+		}
+		return androidPath
+	}
+
+	return filepath.Join(curdDir, "curd.conf")
+}
+
+// SanitizeConfigForPlatform enforces platform-specific invariants.
+// On Android/Termux, desktop-only features (Rofi, Image Preview, Discord RPC) are strictly disabled.
+func SanitizeConfigForPlatform(config *CurdConfig) {
+	if config == nil {
+		return
+	}
+	if IsAndroid() {
+		config.RofiSelection = false
+		config.ImagePreview = false
+		config.DiscordPresence = false
+		config.AlternateScreen = false
+		if strings.TrimSpace(config.AndroidPlayerPackage) == "" {
+			config.AndroidPlayerPackage = "is.xyz.mpv"
+		}
+		if strings.TrimSpace(config.AndroidPlayerActivity) == "" {
+			config.AndroidPlayerActivity = ".MPVActivity"
+		}
+	}
 }
 
 // LoadConfig reads or creates the config file, adds missing fields, and returns the populated CurdConfig struct
@@ -196,6 +256,7 @@ func LoadConfig(configPath string) (CurdConfig, error) {
 
 	// Populate the CurdConfig struct from the config map
 	config := PopulateConfig(configMap)
+	SanitizeConfigForPlatform(&config)
 
 	return config, nil
 }
@@ -380,7 +441,7 @@ func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error)
 	fmt.Println("Opening browser for AniList authentication...")
 	fmt.Printf("If the browser doesn't open automatically, visit: %s\n", authURL)
 
-	if err := browser.OpenURL(authURL); err != nil {
+	if err := OpenURL(authURL); err != nil {
 		fmt.Printf("Failed to open browser automatically: %v\n", err)
 		fmt.Println("Please copy and paste the URL above into your browser")
 	}

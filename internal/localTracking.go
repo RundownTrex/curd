@@ -426,6 +426,24 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 
 		Log(fmt.Sprintf("Started mpv with socket path: %s", anime.Ep.Player.SocketPath))
 
+		if anime.Ep.Player.SocketPath == "android-intent" {
+			action := WaitForAndroidPlayback(GetAnimeName(anime), anime.Ep.Number)
+			switch action {
+			case WaitActionRetry:
+				CurdOut(fmt.Sprintf("\nProvider stuck or failed for Episode %d. Retrying...", anime.Ep.Number))
+				continue
+			case WaitActionQuit:
+				CurdOut("\nExiting Curd.")
+				ExitCurd(nil)
+				return
+			case WaitActionComplete:
+				anime.Ep.Number++
+				anime.Ep.Started = false
+				anime.Ep.IsCompleted = true
+				continue
+			}
+		}
+
 		// Get video duration
 		go func() {
 			for {

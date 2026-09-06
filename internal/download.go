@@ -606,9 +606,19 @@ func DownloadAnimeMenu(config *CurdConfig, user *User, databaseAnimes *[]Anime) 
 		anime.ProviderName = animePointer.ProviderName
 	} else {
 		// Search for anime and resolve mapping
-		userQuery := anime.Title.Romaji
+		userQuery := GetAnimeName(*anime)
 		if userQuery == "" {
-			userQuery = anime.Title.English
+			if config.AnimeNameLanguage == "romaji" {
+				userQuery = anime.Title.Romaji
+				if userQuery == "" {
+					userQuery = anime.Title.English
+				}
+			} else {
+				userQuery = anime.Title.English
+				if userQuery == "" {
+					userQuery = anime.Title.Romaji
+				}
+			}
 		}
 		
 		outcome, err := ResolveAnimeProviderMapping(config, anime, userQuery, animeEntry)

@@ -21,7 +21,8 @@ var (
 	CurrentSubStyle         func() string
 	PersistSubStylePreference func(style string) error
 	StoragePath             func() string
-	AnimeNameLanguage      func() string
+	AnimeNameLanguage         func() string
+	SearchAniListTitles       func(query string) (english, romaji string, err error)
 )
 
 func HTTPStatusOK(statusCode int) bool {

@@ -210,7 +210,11 @@ func (m Model) View() string {
 // visibleItemsCount calculates how many options fit in the terminal
 func (m Model) visibleItemsCount() int {
 	// Leave space for the filter and other UI elements
-	return m.terminalHeight - 4 // Adjust this number based on your terminal layout
+	count := m.terminalHeight - 4 // Adjust this number based on your terminal layout
+	if count < 1 {
+		return 1
+	}
+	return count
 }
 
 // filterOptions filters and sorts options based on the search term

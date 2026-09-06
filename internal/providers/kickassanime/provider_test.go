@@ -215,4 +215,43 @@ func TestLiveLongAnimeAndRecaps(t *testing.T) {
 	}
 }
 
+func TestKickassQueryFallbacks(t *testing.T) {
+	fallbacks := kickassQueryFallbacks("Kabushiki Gaisha Magi Lumiere")
+	foundMagiLumiere := false
+	foundHyphenated := false
+	for _, f := range fallbacks {
+		if f == "Magi Lumiere" {
+			foundMagiLumiere = true
+		}
+		if f == "Magi-Lumiere" || f == "Kabushiki-Gaisha-Magi-Lumiere" {
+			foundHyphenated = true
+		}
+	}
+	if !foundMagiLumiere {
+		t.Errorf("expected 'Magi Lumiere' in fallbacks for 'Kabushiki Gaisha Magi Lumiere', got %v", fallbacks)
+	}
+	if !foundHyphenated {
+		t.Errorf("expected hyphenated variant in fallbacks for 'Kabushiki Gaisha Magi Lumiere', got %v", fallbacks)
+	}
 
+	prevAniListHook := curdhost.SearchAniListTitles
+	curdhost.SearchAniListTitles = func(q string) (string, string, error) {
+		if q == "Kabushiki Gaisha Magi Lumiere" {
+			return "Magilumiere Magical Girls Inc.", "Kabushiki Gaisha Magi Lumiere", nil
+		}
+		return "", "", nil
+	}
+	defer func() { curdhost.SearchAniListTitles = prevAniListHook }()
+
+	fallbacksWithAniList := kickassQueryFallbacks("Kabushiki Gaisha Magi Lumiere")
+	foundEnglish := false
+	for _, f := range fallbacksWithAniList {
+		if f == "Magilumiere Magical Girls Inc." {
+			foundEnglish = true
+			break
+		}
+	}
+	if !foundEnglish {
+		t.Errorf("expected 'Magilumiere Magical Girls Inc.' in fallbacks from AniList hook, got %v", fallbacksWithAniList)
+	}
+}

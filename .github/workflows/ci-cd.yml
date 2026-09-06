@@ -33,6 +33,10 @@ jobs:
       - name: Install Dependencies
         run: go mod tidy
 
+      - name: Install Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y upx
+
       - name: Build Linux binary
         run: |
           ./Build/buildlinux
@@ -43,42 +47,13 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF: ${{ github.ref }}
           GITHUB_EVENT_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          COMPRESS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, 'release:') }}
+          COMPRESS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
-      - name: Build macOS x86_64 binary
+      - name: Build Android ARM64 binary
         run: |
-          ./Build/buildmac-x86_64
-
-      - name: Build macOS ARM64 binary
-        run: |
-          ./Build/buildmac-arm64
-
-      - name: Install LLVM
-        run: |
-          sudo apt-get update && sudo apt-get install -y llvm
-          # Find the llvm-lipo command
-          LIPO_CMD=$(find /usr/bin -name "llvm-lipo*" | head -n 1)
-          echo "Found lipo command: $LIPO_CMD"
-          echo "LIPO_CMD=$LIPO_CMD" >> $GITHUB_ENV
-
-      - name: Create Universal macOS binary
-        run: |
-          ${{ env.LIPO_CMD }} -create "curd-macos-x86_64" "curd-macos-arm64" -output "curd-macos-universal"
-          mkdir -p release/macos
-          mv curd-macos-x86_64 release/macos
-          mv curd-macos-arm64 release/macos
-          mv curd-macos-universal release/macos
-
-      - name: Build Windows binary (cross-compile)
-        run: |
-          ./Build/buildwindows
-          mkdir -p release/windows
-          mv curd-windows-x86_64.exe release/windows/curd-windows-x86_64.exe
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          GITHUB_REF: ${{ github.ref }}
-          GITHUB_EVENT_HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          COMPRESS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, 'release:') }}
+          ./Build/buildandroid-arm64
+          mkdir -p release/android
+          mv curd-android-arm64 release/android/
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -87,23 +62,19 @@ jobs:
           path: |
             release/linux/curd-linux-x86_64
             release/linux/curd-linux-arm64
-            release/macos/curd-macos-x86_64
-            release/macos/curd-macos-arm64
-            release/macos/curd-macos-universal
-            release/windows/curd-windows-x86_64.exe
+            release/android/curd-android-arm64
           retention-days: 1
           if-no-files-found: error
 
   release:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     needs: build
     permissions:
       contents: write
       actions: read
     if: |
       github.ref == 'refs/heads/main' && 
-      github.event_name == 'push' && 
-      (contains(github.event.head_commit.message, 'release:'))
+      github.event_name == 'push'
 
     steps:
       - name: Checkout code
@@ -111,77 +82,43 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download and extract MPV binary
-        run: |
-          # Create directory if it doesn't exist
-          New-Item -ItemType Directory -Force -Path "Build\mpv"
-          # Download the compressed MPV binary
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/${{ github.repository }}/main/Build/mpv.exe.gz" -OutFile "Build\mpv\mpv.exe.gz"
-          # Extract using 7-Zip (built into Windows runners)
-          7z x "Build\mpv\mpv.exe.gz" -o"Build\mpv"
-          Remove-Item "Build\mpv\mpv.exe.gz"
-        shell: pwsh
-
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
           name: curd-binaries
-          path: Build
+          path: downloaded
 
       - name: Organize Release Files
         run: |
-          $version = Get-Content VERSION.txt
-          echo "CURD_VERSION=$version" >> $env:GITHUB_ENV
-          $release_dir = "releases/curd-$version"
-          
-          # Create directory structure
-          New-Item -ItemType Directory -Force -Path "$release_dir/windows"
-          New-Item -ItemType Directory -Force -Path "$release_dir/macos"
-          New-Item -ItemType Directory -Force -Path "$release_dir/linux"
-          
-          # List contents of Build directory to debug
-          Write-Host "Contents of Build directory:"
-          Get-ChildItem -Path "Build" -Recurse
-          
-          # Move files to their respective directories
-          Move-Item "Build/windows/curd-windows-x86_64.exe" "$release_dir/windows/"
-          Move-Item "Build/macos/curd-macos-universal" "$release_dir/macos/"
-          Move-Item "Build/macos/curd-macos-x86_64" "$release_dir/macos/"
-          Move-Item "Build/macos/curd-macos-arm64" "$release_dir/macos/"
-          Move-Item "Build/linux/curd-linux-x86_64" "$release_dir/linux/"
-          Move-Item "Build/linux/curd-linux-arm64" "$release_dir/linux/"
-          Copy-Item "Build/mpv/mpv.exe" "$release_dir/windows/"
-        shell: pwsh
+          mkdir -p release_assets
+          find downloaded -type f -name "curd-*" -exec cp {} release_assets/ \;
+          ls -la release_assets/
 
-      - name: Update Inno Setup Script with New Version
+      - name: Determine Release Tag and Name
         run: |
-          $iss_path = "Build/curd-windows-build.iss"
-          $content = Get-Content $iss_path
-          $content = $content -replace '^AppVersion=.*', "AppVersion=$env:CURD_VERSION"
-          Set-Content $iss_path $content
-        shell: pwsh
+          CURD_VERSION=$(cat VERSION.txt 2>/dev/null || echo "1.0.0")
+          echo "CURD_VERSION=$CURD_VERSION" >> $GITHUB_ENV
+          if echo "${{ github.event.head_commit.message }}" | grep -qiE "release:"; then
+            echo "RELEASE_TAG=v$CURD_VERSION" >> $GITHUB_ENV
+            echo "RELEASE_TITLE=Curd v$CURD_VERSION" >> $GITHUB_ENV
+          else
+            echo "RELEASE_TAG=latest" >> $GITHUB_ENV
+            echo "RELEASE_TITLE=Curd (Latest Build)" >> $GITHUB_ENV
+          fi
 
-      - name: Create Windows Installer
-        run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "Build\curd-windows-build.iss"  
-        shell: pwsh
-
-      - name: Create Release
+      - name: Create or Update Release
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: "v${{ env.CURD_VERSION }}"
-          name: "Curd v${{ env.CURD_VERSION }}"
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TITLE }}
+          target_commitish: main
           draft: false
           prerelease: false
           generate_release_notes: true 
           files: |
-            releases/curd-${{ env.CURD_VERSION }}/linux/curd-linux-x86_64
-            releases/curd-${{ env.CURD_VERSION }}/linux/curd-linux-arm64
-            releases/curd-${{ env.CURD_VERSION }}/macos/curd-macos-x86_64
-            releases/curd-${{ env.CURD_VERSION }}/macos/curd-macos-arm64
-            releases/curd-${{ env.CURD_VERSION }}/macos/curd-macos-universal
-            releases/curd-${{ env.CURD_VERSION }}/windows/curd-windows-x86_64.exe
-            Build/Output/curd-windows-installer.exe
+            release_assets/curd-linux-x86_64
+            release_assets/curd-linux-arm64
+            release_assets/curd-android-arm64
         env:
-          GITHUB_TOKEN: ${{ secrets.ACTIONS_PAT }}
+          GITHUB_TOKEN: ${{ secrets.ACTIONS_PAT || secrets.GITHUB_TOKEN }}

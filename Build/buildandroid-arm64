@@ -1,0 +1,5 @@
+#!/bin/bash
+set -e
+VERSION=$(cat VERSION.txt 2>/dev/null || echo "dev")
+CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -o curd-android-arm64 -ldflags="-X main.version=${VERSION} -s -w" -trimpath cmd/curd/main.go
+echo "Built curd-android-arm64 successfully."

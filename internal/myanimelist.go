@@ -16,8 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/pkg/browser"
 )
 
 const (
@@ -259,7 +257,7 @@ func authenticateWithBrowserMAL(tokenPath string, forceReauth bool) (string, err
 	fmt.Println("Opening browser for MyAnimeList authentication...")
 	fmt.Printf("If the browser doesn't open automatically, visit: %s\n", authURL)
 
-	if err := browser.OpenURL(authURL); err != nil {
+	if err := OpenURL(authURL); err != nil {
 		fmt.Printf("Failed to open browser automatically: %v\n", err)
 		fmt.Println("Please copy and paste the URL above into your browser")
 	}

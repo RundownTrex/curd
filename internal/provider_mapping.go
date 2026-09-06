@@ -260,9 +260,62 @@ func ResolveAnimeProviderMapping(config *CurdConfig, anime *Anime, query string,
 	return resolveAnimeProviderMapping(config, anime, query, anilistEntry, config.ManualProviderSearch)
 }
 
+func collectCandidateQueries(primaryQuery string, anime *Anime, anilistEntry *Entry) []string {
+	seen := make(map[string]struct{})
+	var candidates []string
+
+	add := func(q string) {
+		q = strings.TrimSpace(q)
+		if q == "" {
+			return
+		}
+		key := strings.ToLower(q)
+		if _, exists := seen[key]; !exists {
+			seen[key] = struct{}{}
+			candidates = append(candidates, q)
+		}
+	}
+
+	add(primaryQuery)
+	if anime != nil {
+		add(GetAnimeName(*anime))
+		add(anime.Title.English)
+		add(anime.Title.Romaji)
+		add(anime.Title.Japanese)
+	}
+	if anilistEntry != nil {
+		add(anilistEntry.Media.Title.English)
+		add(anilistEntry.Media.Title.Romaji)
+		add(anilistEntry.Media.Title.Japanese)
+	}
+
+	for _, c := range append([]string(nil), candidates...) {
+		lower := strings.ToLower(c)
+		for _, p := range []string{"kabushiki gaisha ", "kabushikigaisha ", "gekijouban ", "shin ", "eiga "} {
+			if strings.HasPrefix(lower, p) {
+				add(c[len(p):])
+			}
+		}
+		if strings.Contains(c, "-") {
+			add(strings.ReplaceAll(c, "-", " "))
+		}
+		if strings.Contains(c, " ") {
+			add(strings.ReplaceAll(c, " ", "-"))
+		}
+	}
+
+	if len(candidates) == 0 && primaryQuery != "" {
+		candidates = []string{primaryQuery}
+	}
+	return candidates
+}
+
 func resolveAnimeProviderMapping(config *CurdConfig, anime *Anime, query string, anilistEntry *Entry, manualOnly bool) (ProviderMappingOutcome, error) {
+	candidates := collectCandidateQueries(query, anime, anilistEntry)
+	candidateIdx := 0
+
 	state := &providerMappingSearchState{
-		query:        query,
+		query:        candidates[0],
 		allProviders: configuredProviderNames(config),
 	}
 
@@ -270,24 +323,20 @@ func resolveAnimeProviderMapping(config *CurdConfig, anime *Anime, query string,
 		Log(fmt.Sprintf("Searching for anime with query: %s, SubOrDub: %s, scope: %s", state.query, config.SubOrDub, state.currentProviderLabel()))
 
 		animeList, err := searchAnimeForMapping(config, state, config.SubOrDub)
-		if err != nil {
-			Log(fmt.Sprintf("Provider search failed: %v", err))
-			action, actionErr := promptProviderSearchRecovery(config, state, fmt.Sprintf("Provider search failed for '%s': %v", state.query, err))
-			if actionErr != nil {
-				return ProviderMappingQuit, actionErr
+		if err != nil || len(animeList) == 0 {
+			if candidateIdx+1 < len(candidates) {
+				candidateIdx++
+				state.query = candidates[candidateIdx]
+				Log(fmt.Sprintf("No results for previous query, trying alternate candidate %d/%d: %q", candidateIdx+1, len(candidates), state.query))
+				continue
 			}
-			outcome, cont, actionErr := handleProviderMappingAction(config, state, action, query)
-			if actionErr != nil {
-				return ProviderMappingQuit, actionErr
-			}
-			if !cont {
-				return outcome, nil
-			}
-			continue
-		}
 
-		if len(animeList) == 0 {
-			action, actionErr := promptProviderSearchRecovery(config, state, "")
+			errMsg := ""
+			if err != nil {
+				Log(fmt.Sprintf("Provider search failed: %v", err))
+				errMsg = fmt.Sprintf("Provider search failed for '%s': %v", query, err)
+			}
+			action, actionErr := promptProviderSearchRecovery(config, state, errMsg)
 			if actionErr != nil {
 				return ProviderMappingQuit, actionErr
 			}
@@ -298,6 +347,8 @@ func resolveAnimeProviderMapping(config *CurdConfig, anime *Anime, query string,
 			if !cont {
 				return outcome, nil
 			}
+			candidates = collectCandidateQueries(state.query, anime, anilistEntry)
+			candidateIdx = 0
 			continue
 		}
 
@@ -310,6 +361,13 @@ func resolveAnimeProviderMapping(config *CurdConfig, anime *Anime, query string,
 				anime.ProviderName = configuredProviderNames(config)[0]
 			}
 			return ProviderMappingOK, nil
+		}
+
+		if !manualOnly && candidateIdx+1 < len(candidates) {
+			candidateIdx++
+			state.query = candidates[candidateIdx]
+			Log(fmt.Sprintf("No confident match for previous query, trying alternate candidate %d/%d: %q", candidateIdx+1, len(candidates), state.query))
+			continue
 		}
 
 		if manualOnly {
@@ -344,6 +402,8 @@ func resolveAnimeProviderMapping(config *CurdConfig, anime *Anime, query string,
 					if !cont {
 						return outcome, nil
 					}
+					candidates = collectCandidateQueries(state.query, anime, anilistEntry)
+					candidateIdx = 0
 					break
 				case "back":
 					return ProviderMappingBack, nil
@@ -388,6 +448,8 @@ func resolveAnimeProviderMapping(config *CurdConfig, anime *Anime, query string,
 				if !cont {
 					return outcome, nil
 				}
+				candidates = collectCandidateQueries(state.query, anime, anilistEntry)
+				candidateIdx = 0
 				break
 			case "back":
 				return ProviderMappingBack, nil

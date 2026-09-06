@@ -704,26 +704,44 @@ func makePostRequest(url, query string, variables map[string]interface{}, header
 		return nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(requestBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
+	var resp *http.Response
+	var body []byte
+	maxRetries := 2
 
-	req.Header.Set("Content-Type", "application/json") // <-- Important!
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(requestBody))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
+		req.Header.Set("Content-Type", "application/json")
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err = client.Do(req)
+		if err != nil {
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt+1) * time.Second)
+				continue
+			}
+			return nil, fmt.Errorf("failed to send request: %w", err)
+		}
+
+		body, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		if resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504 {
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt+1) * time.Second)
+				continue
+			}
+		}
+		break
 	}
 
 	if resp.StatusCode != http.StatusOK {

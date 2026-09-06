@@ -23,14 +23,21 @@ func main() {
 
 	internal.SetGlobalAnime(&anime)
 
-	var homeDir string
-	if runtime.GOOS == "windows" {
-		homeDir = os.Getenv("USERPROFILE")
-	} else {
-		homeDir = os.Getenv("HOME")
+	configFilePath := internal.DefaultConfigPath()
+	for i, arg := range os.Args {
+		if (arg == "--config" || arg == "-config") && i+1 < len(os.Args) {
+			configFilePath = os.Args[i+1]
+			break
+		}
+		if strings.HasPrefix(arg, "--config=") {
+			configFilePath = strings.TrimPrefix(arg, "--config=")
+			break
+		}
+		if strings.HasPrefix(arg, "-config=") {
+			configFilePath = strings.TrimPrefix(arg, "-config=")
+			break
+		}
 	}
-
-	configFilePath := filepath.Join(homeDir, ".config", "curd", "curd.conf")
 
 	// load curd userCurdConfig
 	userCurdConfig, err := internal.LoadConfig(configFilePath)
@@ -38,6 +45,7 @@ func main() {
 		fmt.Println("Error loading config:", err)
 		return
 	}
+	internal.SanitizeConfigForPlatform(&userCurdConfig)
 	internal.SetGlobalConfig(&userCurdConfig)
 	internal.GlobalConfigPath = configFilePath
 
@@ -61,6 +69,9 @@ func main() {
 	flag.BoolVar(&userCurdConfig.SaveMpvSpeed, "save-mpv-speed", userCurdConfig.SaveMpvSpeed, "Save MPV speed setting (true/false)")
 	flag.BoolVar(&userCurdConfig.DiscordPresence, "discord-presence", userCurdConfig.DiscordPresence, "Enable Discord presence (true/false)")
 	flag.StringVar(&userCurdConfig.DiscordClientId, "discord-client-id", userCurdConfig.DiscordClientId, "Discord client ID for Rich Presence")
+	flag.StringVar(&userCurdConfig.AndroidPlayerPackage, "android-player-pkg", userCurdConfig.AndroidPlayerPackage, "Android player package name (default: is.xyz.mpv)")
+	flag.StringVar(&userCurdConfig.AndroidPlayerActivity, "android-player-activity", userCurdConfig.AndroidPlayerActivity, "Android player activity name (default: .MPVActivity)")
+	flag.BoolVar(&userCurdConfig.AndroidUseTermuxAPI, "android-termux-api", userCurdConfig.AndroidUseTermuxAPI, "Use Termux API for Android features (true/false)")
 	continueLast := flag.Bool("c", false, "Continue last episode")
 	addNewAnime := flag.Bool("new", false, "Add new anime")
 	rofiSelection := flag.Bool("rofi", false, "Open selection in rofi")
@@ -90,7 +101,7 @@ func main() {
 	if *versionFlag {
 		internal.RestoreScreen()
 		if version == "" {
-			version = "2.0.0"
+			version = "3.0.0"
 		}
 		fmt.Printf("Curd version: %s\n", version)
 		os.Exit(0)
@@ -99,7 +110,7 @@ func main() {
 	anime.Ep.ContinueLast = *continueLast
 
 	if *updateScript {
-		repo := "wraient/curd"
+		repo := "RundownTrex/curd"
 		fileName := "curd"
 
 		if err := internal.UpdateCurd(repo, fileName); err != nil {
@@ -144,6 +155,8 @@ func main() {
 	if *noImagePreview || runtime.GOOS == "windows" {
 		userCurdConfig.ImagePreview = false
 	}
+
+	internal.SanitizeConfigForPlatform(&userCurdConfig)
 
 	if *editConfig {
 		internal.EditConfig(configFilePath)
@@ -443,6 +456,62 @@ func main() {
 					skipLoopClosed <- true
 				}
 			default:
+			}
+		}
+
+		if anime.Ep.Player.SocketPath == "android-intent" {
+			action := internal.WaitForAndroidPlayback(internal.GetAnimeName(anime), anime.Ep.Number)
+
+			switch action {
+			case internal.WaitActionRetry:
+				internal.CurdOut(fmt.Sprintf("\n\033[1;33mProvider stuck or failed for Episode %d. Switching provider...\033[0m", anime.Ep.Number))
+				retryProvider = true
+				closeSkipLoop()
+				continue
+
+			case internal.WaitActionQuit:
+				internal.CurdOut("\nExiting Curd.")
+				closeSkipLoop()
+				internal.ExitCurd(nil)
+				return
+
+			case internal.WaitActionComplete:
+				anime.Ep.IsCompleted = true
+				internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, 0, 0, internal.GetAnimeName(anime), anime.ProviderName)
+
+				if !anime.Rewatching {
+					err2 := internal.UpdateAnimeProgressDual(user.AnilistToken, user.MalToken, anime.AnilistId, anime.MalId, anime.Ep.Number, &userCurdConfig)
+					if err2 != nil {
+						internal.Log("Error updating progress on completion: " + err2.Error())
+					} else {
+						internal.CurdOut(fmt.Sprintf("Episode %d marked complete! Progress updated.", anime.Ep.Number))
+					}
+				}
+
+				if !userCurdConfig.NextEpisodePrompt {
+					internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
+					retryProvider = false
+				} else {
+					options := []internal.SelectionOption{
+						{Key: "yes", Label: fmt.Sprintf("Continue to next episode (%d)", anime.Ep.Number+1)},
+						{Key: "no", Label: "Exit Curd"},
+					}
+					internal.CurdOut(fmt.Sprintf("Episode %d finished!", anime.Ep.Number))
+					sel, _ := internal.DynamicSelect(options)
+					if sel.Key == "yes" {
+						internal.StartNextEpisode(&anime, &userCurdConfig, databaseFile, &user)
+						retryProvider = false
+					} else {
+						if anime.TotalEpisodes > 0 && anime.Ep.Number == anime.TotalEpisodes && !anime.IsAiring {
+							internal.HandleLastEpisodeCompletion(&userCurdConfig, &anime, &user)
+						}
+						closeSkipLoop()
+						internal.ExitCurd(nil)
+						return
+					}
+				}
+				closeSkipLoop()
+				continue
 			}
 		}
 
