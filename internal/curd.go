@@ -1425,7 +1425,7 @@ episodeLinksReady:
 	mpvSocketPath, err := StartVideo(PrioritizeLink(anime.Ep.Links), []string{}, fmt.Sprintf("%s - Episode %d", GetAnimeName(*anime), anime.Ep.Number), anime)
 
 	if err != nil {
-		Log("Failed to start mpv")
+		Log("Failed to start media player: " + err.Error())
 		RestoreScreen()
 		os.Exit(1)
 	}

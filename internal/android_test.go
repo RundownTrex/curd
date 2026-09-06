@@ -104,3 +104,40 @@ func TestDefaultConfigPath(t *testing.T) {
 		t.Fatalf("expected config path to end in android.conf or curd.conf, got: %s", path)
 	}
 }
+
+func TestFindAndroidAmBinaryPrefersTermux(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "termux-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	binDir := tempDir + "/bin"
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeAm := binDir + "/am"
+	if err := os.WriteFile(fakeAm, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	origPrefix := os.Getenv("PREFIX")
+	origPath := os.Getenv("PATH")
+	os.Setenv("PREFIX", tempDir)
+	os.Setenv("PATH", binDir+":"+origPath)
+	defer func() {
+		if origPrefix == "" {
+			os.Unsetenv("PREFIX")
+		} else {
+			os.Setenv("PREFIX", origPrefix)
+		}
+		os.Setenv("PATH", origPath)
+	}()
+
+	found := FindAndroidAmBinary()
+	if found != fakeAm {
+		t.Fatalf("expected FindAndroidAmBinary() to return %q, got %q", fakeAm, found)
+	}
+}
+

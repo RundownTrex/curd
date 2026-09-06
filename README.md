@@ -57,6 +57,7 @@ Compared to upstream `wraient/curd`, this fork includes major architectural impr
 2. Install **mpv-android** from [F-Droid](https://f-droid.org/en/packages/is.xyz.mpv/) or Google Play Store.
 3. Grant Termux permission to launch background apps:
    - On Android: **Settings > Apps > Termux > Advanced (or Special app access) > Display over other apps > Allow**.
+4. Install **termux-am** (handled automatically by the one-line installer, or run `pkg install termux-am`).
 
 #### One-Line Install (Recommended)
 Open Termux and run:

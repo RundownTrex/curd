@@ -101,7 +101,7 @@ func main() {
 	if *versionFlag {
 		internal.RestoreScreen()
 		if version == "" {
-			version = "3.0.0"
+			version = "3.0.1"
 		}
 		fmt.Printf("Curd version: %s\n", version)
 		os.Exit(0)

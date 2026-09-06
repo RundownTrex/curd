@@ -421,21 +421,11 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 
 	// Detect Android environment (runtime.GOOS == "android" or Termux environment)
 	if IsAndroid() {
-		amBinary, resolveErr := resolveExecutable("/system/bin/am")
-		if resolveErr != nil {
-			amBinary, resolveErr = resolveExecutable("am")
-			if resolveErr != nil {
-				CurdOut("Error: Android activity manager binary not found")
-				return "", fmt.Errorf("failed to locate android activity manager binary: %w", resolveErr)
-			}
-		}
-
-		cmdArgs := BuildAndroidIntentCommand(userConfig, link, title)
-		command = exec.Command(amBinary, cmdArgs...)
-		err = command.Start()
+		err := LaunchAndroidPlayer(userConfig, link, title)
 		if err != nil {
-			CurdOut("Error: Failed to start android intent")
-			return "", fmt.Errorf("failed to start android intent: %w", err)
+			CurdOut(fmt.Sprintf("Error: %v", err))
+			Log(fmt.Sprintf("LaunchAndroidPlayer error: %v", err))
+			return "", err
 		}
 		return "android-intent", nil
 	}
