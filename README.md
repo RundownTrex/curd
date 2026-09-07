@@ -43,6 +43,14 @@ Compared to upstream `wraient/curd`, this fork includes major architectural impr
 - Removed obsolete and broken Windows (Wine/Inno-Setup) and macOS pipelines.
 - Lightweight GitHub Actions CI/CD automatically building and publishing **Linux** (`x86_64`, `arm64`) and **Android** (`arm64`) binaries.
 
+### 7. Episode Downloading
+- **Interactive Menu**: Access "Download Episodes" directly from the main menu.
+- **Episode Selection**: Search any provider and select single or multiple episodes (`Space` to toggle, `Enter` to confirm).
+- **Current Directory Output**: Saves episodes directly to your current working directory (`.`).
+- **Terminal Progress**: Real-time download speed, progress bar, and ETA.
+- **Rate-Limit Safe**: Controlled concurrency and retry backoff to avoid CDN blocks.
+
+
 ---
 
 ## Installation
@@ -55,6 +63,9 @@ Compared to upstream `wraient/curd`, this fork includes major architectural impr
 3. Grant Termux permission to launch background apps:
    - On Android: **Settings > Apps > Termux > Advanced (or Special app access) > Display over other apps > Allow**.
 4. Install **termux-am** (handled automatically by the one-line installer, or run `pkg install termux-am`).
+5. *(Optional, for downloads)*:
+   - Run `termux-setup-storage` to save files to shared phone storage (e.g. `~/storage/shared/Download`).
+   - Run `pkg install ffmpeg` to merge separate audio/video streams (e.g. KickAssAnime).
 
 #### One-Line Install (Recommended)
 Open Termux and run:
@@ -78,18 +89,18 @@ install -m 755 curd $PREFIX/bin/
 
 #### Prerequisites
 - **Required**: `mpv` (media player)
-- **Optional**: `rofi` and `ueberzugpp` (for graphical selection menu and image previews)
+- **Optional**: `rofi` and `ueberzugpp` (graphical menu & image preview), `ffmpeg` (remuxing downloads with separate audio)
 
 Install dependencies on your distribution:
 ```bash
 # Debian / Ubuntu
-sudo apt update && sudo apt install mpv curl rofi
+sudo apt update && sudo apt install mpv curl rofi ffmpeg
 
 # Arch Linux
-sudo pacman -S mpv curl rofi ueberzugpp
+sudo pacman -S mpv curl rofi ueberzugpp ffmpeg
 
 # Fedora
-sudo dnf install mpv curl rofi
+sudo dnf install mpv curl rofi ffmpeg
 ```
 
 #### Prebuilt Binary
@@ -147,6 +158,15 @@ You can choose between **mpv** (default) or **vlc**:
   Player=mpv
   ```
 
+### Downloading Episodes
+
+1. Run `curd` and select **Download Episodes**.
+2. Pick a provider and search for an anime.
+3. Select episode(s) using `[Space]` to toggle and `[Enter]` to confirm.
+4. Episodes download into your current directory.
+
+> **Tip (Android/Termux)**: To save downloads directly to your phone's Downloads folder, run `cd ~/storage/shared/Download` before starting `curd`.
+
 ### Command Line Options
 
 | Flag | Description | Default |
@@ -196,6 +216,8 @@ curd -e
 | `SkipOp` / `SkipEd` | Boolean | `true`, `false` | Auto-skip intro and outro via AniSkip. |
 | `AndroidPlayerPackage` | String | `is.xyz.mpv` | Package name of Android player. |
 | `AndroidPlayerActivity` | String | `is.xyz.mpv.MPVActivity` | Activity name of Android player. |
+| `DownloadQuality` | Enum | `best`, `1080p`, `720p`, `480p` | Preferred download resolution (default: `best`). |
+| `DownloadConcurrency` | Integer | `1` - `5` | Number of concurrent segment downloads (default: `3`). |
 
 ---
 

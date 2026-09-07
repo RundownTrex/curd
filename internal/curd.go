@@ -861,6 +861,12 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 					return
 				}
 				ExitCurd(nil)
+			} else if categorySelection.Key == "DOWNLOAD" {
+				ClearScreen()
+				DownloadMenu(userCurdConfig)
+				ClearScreen()
+				SetupCurd(userCurdConfig, anime, user, databaseAnimes, databaseFile)
+				return
 			} else if categorySelection.Key == "UNTRACKED" {
 				ClearScreen()
 				WatchUntracked(userCurdConfig)

@@ -68,6 +68,8 @@ type CurdConfig struct {
 	AndroidPlayerPackage     string   `config:"AndroidPlayerPackage"`
 	AndroidPlayerActivity    string   `config:"AndroidPlayerActivity"`
 	AndroidUseTermuxAPI      bool     `config:"AndroidUseTermuxAPI"`
+	DownloadQuality          string   `config:"DownloadQuality"`
+	DownloadConcurrency      int      `config:"DownloadConcurrency"`
 }
 
 // Default configuration values as a map
@@ -78,7 +80,7 @@ func defaultConfigMap() map[string]string {
 		"StoragePath":              "$HOME/.local/share/curd",
 		"AnimeNameLanguage":        "english",
 		"SubsLanguage":             "english",
-		"MenuOrder":                "CURRENT,ALL,UNTRACKED,UPDATE,CONTINUE_LAST,PROVIDER",
+		"MenuOrder":                "CURRENT,ALL,UNTRACKED,DOWNLOAD,UPDATE,CONTINUE_LAST,PROVIDER",
 		"TrackingService":          "mal",
 		"DualTracking":             "true",
 		"SubOrDub":                 "sub",
@@ -103,6 +105,8 @@ func defaultConfigMap() map[string]string {
 		"AndroidPlayerPackage":     "is.xyz.mpv",
 		"AndroidPlayerActivity":    ".MPVActivity",
 		"AndroidUseTermuxAPI":      "true",
+		"DownloadQuality":          "best",
+		"DownloadConcurrency":      "3",
 	}
 
 	if IsAndroid() {
@@ -223,6 +227,18 @@ func LoadConfig(configPath string) (CurdConfig, error) {
 	for key, defaultValue := range defaultConfigMap {
 		if _, exists := configMap[key]; !exists {
 			configMap[key] = defaultValue
+			updated = true
+		}
+	}
+
+	// Ensure DOWNLOAD is in MenuOrder
+	if menuOrderVal, exists := configMap["MenuOrder"]; exists {
+		if !strings.Contains(menuOrderVal, "DOWNLOAD") {
+			if strings.Contains(menuOrderVal, "UPDATE") {
+				configMap["MenuOrder"] = strings.Replace(menuOrderVal, "UPDATE", "DOWNLOAD,UPDATE", 1)
+			} else {
+				configMap["MenuOrder"] = menuOrderVal + ",DOWNLOAD"
+			}
 			updated = true
 		}
 	}
@@ -657,12 +673,18 @@ func PopulateConfig(configMap map[string]string) CurdConfig {
 }
 
 func getOrderedCategories(userCurdConfig *CurdConfig) []SelectionOption {
+	isRofi := userCurdConfig != nil && userCurdConfig.RofiSelection
+
 	// Define the default categories and their labels
-	defaultOrder := []string{"CURRENT", "ALL", "UNTRACKED", "UPDATE", "CONTINUE_LAST", "PROVIDER"}
+	defaultOrder := []string{"CURRENT", "ALL", "UNTRACKED", "DOWNLOAD", "UPDATE", "CONTINUE_LAST", "PROVIDER"}
+	if isRofi {
+		defaultOrder = []string{"CURRENT", "ALL", "UNTRACKED", "UPDATE", "CONTINUE_LAST", "PROVIDER"}
+	}
 	defaultLabels := map[string]string{
 		"CURRENT":        "Currently Watching",
 		"ALL":            "Show All",
 		"UNTRACKED":      "Untracked Watching",
+		"DOWNLOAD":       "Download Episodes",
 		"UPDATE":         "Update (Episode, Status, Score)",
 		"CONTINUE_LAST":  "Continue Last Session",
 		"PROVIDER":       "Change Provider",
@@ -673,13 +695,16 @@ func getOrderedCategories(userCurdConfig *CurdConfig) []SelectionOption {
 	seen := make(map[string]bool)
 
 	// If no menu order specified, use default order
-	if userCurdConfig.MenuOrder == "" {
+	if userCurdConfig == nil || userCurdConfig.MenuOrder == "" {
 		finalOrder = defaultOrder
 	} else {
 		// First, process user-specified order
 		menuItems := strings.Split(userCurdConfig.MenuOrder, ",")
 		for _, key := range menuItems {
 			key = strings.TrimSpace(key)
+			if isRofi && key == "DOWNLOAD" {
+				continue
+			}
 			if _, exists := defaultLabels[key]; exists && !seen[key] {
 				finalOrder = append(finalOrder, key)
 				seen[key] = true
@@ -688,6 +713,9 @@ func getOrderedCategories(userCurdConfig *CurdConfig) []SelectionOption {
 
 		// Add remaining default items at the end
 		for _, key := range defaultOrder {
+			if isRofi && key == "DOWNLOAD" {
+				continue
+			}
 			if !seen[key] {
 				finalOrder = append(finalOrder, key)
 				seen[key] = true

@@ -401,6 +401,9 @@ func RofiSelect(options []SelectionOption) (SelectionOption, error) {
 	// Create ordered list of options
 	var optionsList []string
 	for _, opt := range options {
+		if opt.Key == "DOWNLOAD" {
+			continue
+		}
 		optionsList = append(optionsList, opt.Label)
 	}
 
@@ -495,8 +498,18 @@ func DynamicSelect(options []SelectionOption) (SelectionOption, error) {
 
 			sorted := make([]SelectionOption, 0, len(options))
 			for _, key := range menuOrder {
+				key = strings.TrimSpace(key)
 				if opt, exists := optMap[key]; exists {
 					sorted = append(sorted, opt)
+					delete(optMap, key)
+				}
+			}
+
+			// Append any remaining options that were not explicitly in menuOrder
+			for _, origOpt := range options {
+				if opt, exists := optMap[origOpt.Key]; exists {
+					sorted = append(sorted, opt)
+					delete(optMap, origOpt.Key)
 				}
 			}
 			options = sorted
