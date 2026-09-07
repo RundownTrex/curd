@@ -54,7 +54,7 @@ func main() {
 	internal.ClearLogFile(logFile)
 
 	// Flags configured here cause userconfig needs to be changed.
-	flag.StringVar(&userCurdConfig.Player, "player", userCurdConfig.Player, "Player to use for playback (Only mpv supported currently)")
+	flag.StringVar(&userCurdConfig.Player, "player", userCurdConfig.Player, "Player to use for playback (mpv or vlc on Android, mpv on desktop)")
 	flag.StringVar(&userCurdConfig.StoragePath, "storage-path", userCurdConfig.StoragePath, "Path to the storage directory")
 	flag.StringVar(&userCurdConfig.SubsLanguage, "subs-lang", userCurdConfig.SubsLanguage, "Subtitles language")
 	flag.IntVar(&userCurdConfig.PercentageToMarkComplete, "percentage-to-mark-complete", userCurdConfig.PercentageToMarkComplete, "Percentage to mark episode as complete")
@@ -96,6 +96,9 @@ func main() {
 	}
 
 	flag.Parse()
+
+	internal.SanitizeConfigForPlatform(&userCurdConfig)
+	internal.SetGlobalConfig(&userCurdConfig)
 
 	// Check version before screen clearing
 	if *versionFlag {

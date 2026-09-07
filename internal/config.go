@@ -186,12 +186,9 @@ func SanitizeConfigForPlatform(config *CurdConfig) {
 		config.ImagePreview = false
 		config.DiscordPresence = false
 		config.AlternateScreen = false
-		if strings.TrimSpace(config.AndroidPlayerPackage) == "" {
-			config.AndroidPlayerPackage = "is.xyz.mpv"
-		}
-		if strings.TrimSpace(config.AndroidPlayerActivity) == "" {
-			config.AndroidPlayerActivity = ".MPVActivity"
-		}
+		pkg, act := ResolveAndroidPlayer(config)
+		config.AndroidPlayerPackage = pkg
+		config.AndroidPlayerActivity = act
 	}
 }
 

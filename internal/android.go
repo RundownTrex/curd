@@ -95,19 +95,50 @@ func tryIntentCommand(name string, args []string) error {
 	return nil
 }
 
-// BuildAndroidIntentCommand builds the argument list for Android's activity manager (am start)
-// to launch the configured media player (defaulting to is.xyz.mpv/.MPVActivity) with the given URL and title.
-func BuildAndroidIntentCommand(config *CurdConfig, link string, title string) []string {
+// ResolveAndroidPlayer resolves the Android package and activity for the configured player.
+// It supports "mpv" (is.xyz.mpv/.MPVActivity) and "vlc" (org.videolan.vlc/.gui.video.VideoPlayerActivity)
+// out of the box, and preserves any custom player package/activity set by the user.
+func ResolveAndroidPlayer(config *CurdConfig) (string, string) {
 	pkg := "is.xyz.mpv"
 	activity := ".MPVActivity"
-	if config != nil {
-		if strings.TrimSpace(config.AndroidPlayerPackage) != "" {
-			pkg = strings.TrimSpace(config.AndroidPlayerPackage)
+	if config == nil {
+		return pkg, activity
+	}
+
+	playerChoice := strings.ToLower(strings.TrimSpace(config.Player))
+	pkgChoice := strings.ToLower(strings.TrimSpace(config.AndroidPlayerPackage))
+
+	// VLC detection: via config.Player == "vlc", or AndroidPlayerPackage containing "vlc"/"videolan"
+	if playerChoice == "vlc" || pkgChoice == "vlc" || strings.Contains(pkgChoice, "videolan") {
+		pkg = "org.videolan.vlc"
+		activity = ".gui.video.VideoPlayerActivity"
+		if strings.TrimSpace(config.AndroidPlayerActivity) != "" && !strings.EqualFold(config.AndroidPlayerActivity, ".MPVActivity") {
+			activity = strings.TrimSpace(config.AndroidPlayerActivity)
 		}
+		return pkg, activity
+	}
+
+	// Explicit custom package specified
+	if strings.TrimSpace(config.AndroidPlayerPackage) != "" && !strings.EqualFold(config.AndroidPlayerPackage, "mpv") && !strings.EqualFold(config.AndroidPlayerPackage, "is.xyz.mpv") {
+		pkg = strings.TrimSpace(config.AndroidPlayerPackage)
 		if strings.TrimSpace(config.AndroidPlayerActivity) != "" {
 			activity = strings.TrimSpace(config.AndroidPlayerActivity)
 		}
+		return pkg, activity
 	}
+
+	// Default: MPV
+	if strings.TrimSpace(config.AndroidPlayerActivity) != "" {
+		activity = strings.TrimSpace(config.AndroidPlayerActivity)
+	}
+
+	return pkg, activity
+}
+
+// BuildAndroidIntentCommand builds the argument list for Android's activity manager (am start)
+// to launch the configured media player (mpv or vlc) with the given URL and title.
+func BuildAndroidIntentCommand(config *CurdConfig, link string, title string) []string {
+	pkg, activity := ResolveAndroidPlayer(config)
 
 	args := []string{
 		"start", "--user", "0",
@@ -124,22 +155,13 @@ func BuildAndroidIntentCommand(config *CurdConfig, link string, title string) []
 }
 
 // LaunchAndroidPlayer launches the video link on Android using the best available method:
-// 1. Termux am targeting mpv-android (is.xyz.mpv/.MPVActivity) with --user 0 (proven in ani-cli)
-// 2. Termux am targeting mpv-android without --user (current user context)
+// 1. Termux am targeting configured player (mpv-android or VLC) with --user 0
+// 2. Termux am targeting configured player without --user (current user context)
 // 3. Generic VIEW intent without component restriction
 // 4. termux-open-url (targeting component or generic)
 // 5. termux-open (generic)
 func LaunchAndroidPlayer(config *CurdConfig, link string, title string, anime ...*Anime) error {
-	pkg := "is.xyz.mpv"
-	activity := ".MPVActivity"
-	if config != nil {
-		if strings.TrimSpace(config.AndroidPlayerPackage) != "" {
-			pkg = strings.TrimSpace(config.AndroidPlayerPackage)
-		}
-		if strings.TrimSpace(config.AndroidPlayerActivity) != "" {
-			activity = strings.TrimSpace(config.AndroidPlayerActivity)
-		}
-	}
+	pkg, activity := ResolveAndroidPlayer(config)
 	component := fmt.Sprintf("%s/%s", pkg, activity)
 
 	playURL := link

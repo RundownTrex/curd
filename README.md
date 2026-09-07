@@ -123,11 +123,29 @@ curd
 
 ### Android Playback Controls
 When you select an anime and episode in Termux:
-1. `mpv-android` opens in the foreground to stream your episode.
+1. `mpv-android` (or `VLC`) opens in the foreground to stream your episode.
 2. Switch back to or view Termux in split-screen/PiP:
    - Press **`[Enter]`**: Confirms episode completion and syncs progress to AniList / MyAnimeList.
    - Press **`[Esc]`**: Switches provider if the video is stuck, buffering, or offline.
    - Press **`[q]`**: Exits playback cleanly.
+
+### Changing Player on Android (MPV or VLC)
+
+You can choose between **mpv** (default) or **vlc**:
+
+- **While running (command-line)**:
+  ```bash
+  curd -player vlc
+  # or
+  curd -player mpv
+  ```
+
+- **In configuration (`curd -e`)**:
+  ```ini
+  Player=vlc
+  # or
+  Player=mpv
+  ```
 
 ### Command Line Options
 
@@ -146,7 +164,7 @@ When you select an anime and episode in Termux:
 | `-skip-ed` | Automatically skip anime endings via AniSkip | `true` |
 | `-skip-filler` | Automatically skip filler episodes | `true` |
 | `-percentage-to-mark-complete` | % watched to automatically mark completed | `85` |
-| `-player` | Media player binary name (Linux desktop) | `"mpv"` |
+| `-player` | Media player to use (`mpv` or `vlc`) | `"mpv"` |
 | `-e` | Open configuration file in editor | - |
 | `-change-token` | Reconfigure tracking authentication token | - |
 | `-v` | Display Curd version | - |

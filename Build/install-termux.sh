@@ -23,6 +23,6 @@ mv "${TMP}" "${TARGET}"
 
 echo "Successfully installed curd to ${TARGET}"
 echo "Prerequisites:"
-echo "  1. Install mpv-android (is.xyz.mpv) from F-Droid or Play Store."
+echo "  1. Install mpv-android (is.xyz.mpv) or VLC (org.videolan.vlc) from F-Droid or Play Store."
 echo "  2. Ensure Termux has 'Display over other apps' permission enabled."
 echo "Run 'curd' to start watching."

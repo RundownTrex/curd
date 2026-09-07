@@ -141,3 +141,65 @@ func TestFindAndroidAmBinaryPrefersTermux(t *testing.T) {
 	}
 }
 
+func TestResolveAndroidPlayer(t *testing.T) {
+	// 1. Default config -> MPV
+	pkg, act := ResolveAndroidPlayer(nil)
+	if pkg != "is.xyz.mpv" || act != ".MPVActivity" {
+		t.Errorf("expected default MPV player, got %s/%s", pkg, act)
+	}
+
+	// 2. Player = "vlc" -> VLC
+	vlcCfg := &CurdConfig{Player: "vlc"}
+	pkg, act = ResolveAndroidPlayer(vlcCfg)
+	if pkg != "org.videolan.vlc" || act != ".gui.video.VideoPlayerActivity" {
+		t.Errorf("expected VLC player for Player=vlc, got %s/%s", pkg, act)
+	}
+
+	// 3. AndroidPlayerPackage = "vlc" -> VLC
+	vlcPkgCfg := &CurdConfig{AndroidPlayerPackage: "vlc"}
+	pkg, act = ResolveAndroidPlayer(vlcPkgCfg)
+	if pkg != "org.videolan.vlc" || act != ".gui.video.VideoPlayerActivity" {
+		t.Errorf("expected VLC player for AndroidPlayerPackage=vlc, got %s/%s", pkg, act)
+	}
+
+	// 4. AndroidPlayerPackage = "org.videolan.vlc" -> VLC
+	vlcFullCfg := &CurdConfig{AndroidPlayerPackage: "org.videolan.vlc"}
+	pkg, act = ResolveAndroidPlayer(vlcFullCfg)
+	if pkg != "org.videolan.vlc" || act != ".gui.video.VideoPlayerActivity" {
+		t.Errorf("expected VLC player for AndroidPlayerPackage=org.videolan.vlc, got %s/%s", pkg, act)
+	}
+
+	// 5. Custom package and activity
+	customCfg := &CurdConfig{
+		AndroidPlayerPackage:  "com.mxtech.videoplayer.ad",
+		AndroidPlayerActivity: ".ActivityScreen",
+	}
+	pkg, act = ResolveAndroidPlayer(customCfg)
+	if pkg != "com.mxtech.videoplayer.ad" || act != ".ActivityScreen" {
+		t.Errorf("expected custom player preserved, got %s/%s", pkg, act)
+	}
+}
+
+func TestSanitizeConfigForPlatform_VLC(t *testing.T) {
+	origTermux := os.Getenv("TERMUX_VERSION")
+	os.Setenv("TERMUX_VERSION", "0.118.0")
+	defer func() {
+		if origTermux == "" {
+			os.Unsetenv("TERMUX_VERSION")
+		} else {
+			os.Setenv("TERMUX_VERSION", origTermux)
+		}
+	}()
+
+	cfg := &CurdConfig{Player: "vlc"}
+	SanitizeConfigForPlatform(cfg)
+
+	if cfg.AndroidPlayerPackage != "org.videolan.vlc" {
+		t.Errorf("expected AndroidPlayerPackage 'org.videolan.vlc', got %q", cfg.AndroidPlayerPackage)
+	}
+	if cfg.AndroidPlayerActivity != ".gui.video.VideoPlayerActivity" {
+		t.Errorf("expected AndroidPlayerActivity '.gui.video.VideoPlayerActivity', got %q", cfg.AndroidPlayerActivity)
+	}
+}
+
+
