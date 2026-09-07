@@ -202,4 +202,86 @@ func TestSanitizeConfigForPlatform_VLC(t *testing.T) {
 	}
 }
 
+func TestResolveDiscordLargeImage(t *testing.T) {
+	fallback := "https://anilist.co/img/icons/icon.png"
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "empty string",
+			input:    "",
+			expected: fallback,
+		},
+		{
+			name:     "svg fallback URL",
+			input:    "https://anilist.co/img/icons/icon.svg",
+			expected: fallback,
+		},
+		{
+			name:     "local cached file path",
+			input:    "/home/user/.cache/curd/images/abcdef123456.jpg",
+			expected: fallback,
+		},
+		{
+			name:     "valid AniList JPG cover",
+			input:    "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx171110-7zOdInS6DQNL.jpg",
+			expected: "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx171110-7zOdInS6DQNL.jpg",
+		},
+		{
+			name:     "valid PNG cover with whitespace",
+			input:    "  https://example.com/cover.png  ",
+			expected: "https://example.com/cover.png",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveDiscordLargeImage(tt.input)
+			if got != tt.expected {
+				t.Errorf("ResolveDiscordLargeImage(%q) = %q, expected %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestBuildDiscordButtons(t *testing.T) {
+	b0 := BuildDiscordButtons(0, 0)
+	if len(b0) != 0 {
+		t.Errorf("expected 0 buttons, got %d", len(b0))
+	}
+
+	b1 := BuildDiscordButtons(171110, 0)
+	if len(b1) != 1 || b1[0].Url != "https://anilist.co/anime/171110" {
+		t.Errorf("expected AniList button only, got: %v", b1)
+	}
+
+	b2 := BuildDiscordButtons(0, 57466)
+	if len(b2) != 1 || b2[0].Url != "https://myanimelist.net/anime/57466" {
+		t.Errorf("expected MAL button only, got: %v", b2)
+	}
+
+	b3 := BuildDiscordButtons(171110, 57466)
+	if len(b3) != 2 {
+		t.Fatalf("expected 2 buttons, got %d", len(b3))
+	}
+	if b3[0].Url != "https://anilist.co/anime/171110" || b3[1].Url != "https://myanimelist.net/anime/57466" {
+		t.Errorf("button URLs mismatch: %v, %v", b3[0].Url, b3[1].Url)
+	}
+}
+
+func TestGetAnimeIDAndImage_InvalidID(t *testing.T) {
+	_, _, err := GetAnimeIDAndImage(0)
+	if err == nil {
+		t.Error("expected error for anilistMediaID = 0, got nil")
+	}
+
+	_, _, err = GetAnimeIDAndImage(-1)
+	if err == nil {
+		t.Error("expected error for anilistMediaID = -1, got nil")
+	}
+}
+
 

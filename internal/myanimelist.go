@@ -405,7 +405,7 @@ func GetMALUserInfo(token string) (int, string, error) {
 // GetMALUserAnimeList retrieves the user's anime list from MAL
 func GetMALUserAnimeList(token string) (map[string]interface{}, error) {
 	allData := []MALAnimeListEntry{}
-	nextURL := fmt.Sprintf("%s/users/@me/animelist?fields=list_status,num_episodes&limit=1000", malAPIURL)
+	nextURL := fmt.Sprintf("%s/users/@me/animelist?fields=list_status,num_episodes,main_picture&limit=1000", malAPIURL)
 
 	for nextURL != "" {
 		req, err := http.NewRequest("GET", nextURL, nil)
@@ -482,6 +482,11 @@ func convertMALToAnilistFormat(malEntries []MALAnimeListEntry) []interface{} {
 			status = "REPEATING"
 		}
 
+		coverURL := malEntry.Node.MainPicture.Large
+		if coverURL == "" {
+			coverURL = malEntry.Node.MainPicture.Medium
+		}
+
 		entry := map[string]interface{}{
 			"media": map[string]interface{}{
 				"id":       malEntry.Node.ID,
@@ -493,7 +498,7 @@ func convertMALToAnilistFormat(malEntries []MALAnimeListEntry) []interface{} {
 					"native":  malEntry.Node.Title,
 				},
 				"coverImage": map[string]interface{}{
-					"large": malEntry.Node.MainPicture.Large,
+					"large": coverURL,
 				},
 			},
 			"status":   status,

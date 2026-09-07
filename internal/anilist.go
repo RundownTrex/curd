@@ -407,12 +407,17 @@ func GetAnimeMalID(anilistMediaID int) (int, error) {
 
 // This function retrieves the MAL ID and cover image URL for an anime from AniList
 func GetAnimeIDAndImage(anilistMediaID int) (int, string, error) {
+	if anilistMediaID <= 0 {
+		return 0, "", fmt.Errorf("invalid AniList media ID: %d", anilistMediaID)
+	}
+
 	url := "https://graphql.anilist.co"
 	query := `
 	query ($id: Int) {
 		Media(id: $id) {
 			coverImage {
 				large
+				medium
 			}
 			idMal
 		}
@@ -427,9 +432,29 @@ func GetAnimeIDAndImage(anilistMediaID int) (int, string, error) {
 		return 0, "", err
 	}
 
-	data := response["data"].(map[string]interface{})["Media"].(map[string]interface{})
-	malID := int(data["idMal"].(float64))
-	imageURL := data["coverImage"].(map[string]interface{})["large"].(string)
+	dataMap, ok := response["data"].(map[string]interface{})
+	if !ok || dataMap == nil {
+		return 0, "", fmt.Errorf("no data returned from anilist")
+	}
+
+	media, ok := dataMap["Media"].(map[string]interface{})
+	if !ok || media == nil {
+		return 0, "", fmt.Errorf("no media found for anilist ID %d", anilistMediaID)
+	}
+
+	malID := 0
+	if idMalVal, ok := media["idMal"].(float64); ok {
+		malID = int(idMalVal)
+	}
+
+	imageURL := ""
+	if coverMap, ok := media["coverImage"].(map[string]interface{}); ok && coverMap != nil {
+		if l, ok := coverMap["large"].(string); ok && l != "" {
+			imageURL = l
+		} else if m, ok := coverMap["medium"].(string); ok && m != "" {
+			imageURL = m
+		}
+	}
 
 	return malID, imageURL, nil
 }
@@ -445,6 +470,9 @@ func GetUserData(token string, userID int) (map[string]interface{}, error) {
 						id
 						episodes
 						duration
+						coverImage {
+							large
+						}
 						title {
 							romaji
 							english
@@ -760,7 +788,6 @@ func makePostRequest(url, query string, variables map[string]interface{}, header
 
 func ParseAnimeList(input map[string]interface{}) AnimeList {
 	var animeList AnimeList
-	userCurdConfig := GetGlobalConfig()
 
 	toInt := func(value interface{}) int {
 		switch v := value.(type) {
@@ -819,8 +846,11 @@ func ParseAnimeList(input map[string]interface{}) AnimeList {
 				Status:   safeString(entryData["status"]), // Ensure status is fetched safely
 			}
 
-			if userCurdConfig.RofiSelection && userCurdConfig.ImagePreview {
-				animeEntry.CoverImage = safeString(media["coverImage"].(map[string]interface{})["large"])
+			if coverImgMap, ok := media["coverImage"].(map[string]interface{}); ok && coverImgMap != nil {
+				animeEntry.CoverImage = safeString(coverImgMap["large"])
+				if animeEntry.CoverImage == "" {
+					animeEntry.CoverImage = safeString(coverImgMap["medium"])
+				}
 			}
 
 			// Append entries based on their status

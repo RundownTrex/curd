@@ -342,17 +342,34 @@ func main() {
 		}
 
 		if !retryProvider {
-			// Get MalId and CoverImage (only if discord presence is enabled)
+			// Ensure MalId and CoverImage are populated if discord presence is enabled
 			if userCurdConfig.DiscordPresence {
-				if trackingService == "mal" || trackingService == "myanimelist" {
-					if anime.MalId == 0 {
-						anime.MalId = anime.AnilistId
+				if anime.CoverImage == "" || anime.MalId == 0 {
+					if anime.AnilistId != 0 {
+						malID, imgURL, fetchErr := internal.GetAnimeIDAndImage(anime.AnilistId)
+						if fetchErr != nil {
+							internal.Log("Error getting anime ID and image from AniList: " + fetchErr.Error())
+						} else {
+							if anime.CoverImage == "" && imgURL != "" {
+								anime.CoverImage = imgURL
+							}
+							if anime.MalId == 0 && malID != 0 {
+								anime.MalId = malID
+							}
+						}
 					}
-				} else {
-					anime.MalId, anime.CoverImage, err = internal.GetAnimeIDAndImage(anime.AnilistId)
-					if err != nil {
-						internal.Log("Error getting anime ID and image: " + err.Error())
+				}
+
+				// If CoverImage is still empty and we have a MAL ID, attempt fallback to Jikan
+				if anime.CoverImage == "" && anime.MalId != 0 {
+					if pictures, pErr := internal.FetchJikanPictures(anime.MalId); pErr == nil && len(pictures) > 0 {
+						anime.CoverImage = pictures[0]
+						internal.Log("Fetched cover image from Jikan: " + anime.CoverImage)
 					}
+				}
+
+				if (trackingService == "mal" || trackingService == "myanimelist") && anime.MalId == 0 {
+					anime.MalId = anime.AnilistId
 				}
 				// Skip initial Discord presence - wait for MPV to provide real duration
 				// This avoids showing the default 25-minute duration before the video starts
@@ -360,10 +377,12 @@ func main() {
 			} else if anime.MalId == 0 {
 				if trackingService == "mal" || trackingService == "myanimelist" {
 					anime.MalId = anime.AnilistId
-				} else {
-					anime.MalId, err = internal.GetAnimeMalID(anime.AnilistId)
-					if err != nil {
-						internal.Log("Error getting anime MAL ID: " + err.Error())
+				} else if anime.AnilistId != 0 {
+					malID, malErr := internal.GetAnimeMalID(anime.AnilistId)
+					if malErr != nil {
+						internal.Log("Error getting anime MAL ID: " + malErr.Error())
+					} else if malID != 0 {
+						anime.MalId = malID
 					}
 				}
 			}

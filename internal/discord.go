@@ -2,8 +2,10 @@ package internal
 
 import (
 	"fmt"
-	"github.com/tr1xem/go-discordrpc/client"
+	"strings"
 	"time"
+
+	"github.com/tr1xem/go-discordrpc/client"
 )
 
 var discordClient *client.Client
@@ -95,10 +97,8 @@ func DiscordPresenceWithForce(anime Anime, IsPaused bool, currentPosition int, t
 		SmallText = ""
 	}
 
-	largeImage := anime.CoverImage
-	if largeImage == "" {
-		largeImage = "https://anilist.co/img/icons/icon.svg" // fallback image
-	}
+	largeImage := ResolveDiscordLargeImage(anime.CoverImage)
+	buttons := BuildDiscordButtons(anime.AnilistId, anime.MalId)
 
 	err := discordClient.SetActivity(client.Activity{
 		Type:       3, // Watching
@@ -110,16 +110,7 @@ func DiscordPresenceWithForce(anime Anime, IsPaused bool, currentPosition int, t
 		SmallImage: SmallImage,
 		SmallText:  SmallText,
 		Timestamps: timestamps,
-		Buttons: []*client.Button{
-			{
-				Label: "View on AniList",                                           // Button label
-				Url:   fmt.Sprintf("https://anilist.co/anime/%d", anime.AnilistId), // Button link
-			},
-			{
-				Label: "View on MAL",                                                // Button label
-				Url:   fmt.Sprintf("https://myanimelist.net/anime/%d", anime.MalId), // Button link
-			},
-		},
+		Buttons:    buttons,
 	})
 
 	if err != nil {
@@ -159,4 +150,32 @@ func FormatTime(seconds int) string {
 
 func ConvertSecondsToMinutes(seconds int) int {
 	return seconds / 60
+}
+
+// ResolveDiscordLargeImage ensures the image URL passed to Discord RPC is a valid raster format (PNG/JPG/WebP/GIF).
+// Discord does not render SVG images or local file paths in Rich Presence.
+func ResolveDiscordLargeImage(coverImage string) string {
+	largeImage := strings.TrimSpace(coverImage)
+	if largeImage == "" || strings.HasSuffix(strings.ToLower(largeImage), ".svg") || (!strings.HasPrefix(largeImage, "http://") && !strings.HasPrefix(largeImage, "https://")) {
+		return "https://anilist.co/img/icons/icon.png" // fallback image (Discord-compatible PNG)
+	}
+	return largeImage
+}
+
+// BuildDiscordButtons constructs activity buttons, only including links with valid IDs.
+func BuildDiscordButtons(anilistID, malID int) []*client.Button {
+	var buttons []*client.Button
+	if anilistID > 0 {
+		buttons = append(buttons, &client.Button{
+			Label: "View on AniList",
+			Url:   fmt.Sprintf("https://anilist.co/anime/%d", anilistID),
+		})
+	}
+	if malID > 0 {
+		buttons = append(buttons, &client.Button{
+			Label: "View on MAL",
+			Url:   fmt.Sprintf("https://myanimelist.net/anime/%d", malID),
+		})
+	}
+	return buttons
 }
