@@ -7,6 +7,9 @@ import (
 )
 
 func TestLiveFetchAnidbSearch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live network test in short mode")
+	}
 	opts, err := searchAllAnime("one piece", "sub")
 	if err != nil {
 		t.Fatalf("searchAllAnime failed: %v", err)
@@ -18,6 +21,9 @@ func TestLiveFetchAnidbSearch(t *testing.T) {
 }
 
 func TestLiveFetchAnidbEpisodes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live network test in short mode")
+	}
 	eps, err := getAllAnimeEpisodesList("one-piece-3880", "sub")
 	if err != nil {
 		t.Fatalf("getAllAnimeEpisodesList failed: %v", err)
@@ -29,6 +35,9 @@ func TestLiveFetchAnidbEpisodes(t *testing.T) {
 }
 
 func TestLiveFetchAnidbStreams(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live network test in short mode")
+	}
 	p := &Provider{}
 	links, hints, err := p.GetEpisodeURLForModeWithHints(providers.PlaybackConfig{SubOrDub: "sub"}, "one-piece-3880", 1, "sub")
 	if err != nil {

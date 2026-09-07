@@ -42,7 +42,6 @@ type CurdConfig struct {
 	SubsLanguage             string   `config:"SubsLanguage"`
 	SubOrDub                 string   `config:"SubOrDub"`
 	StoragePath              string   `config:"StoragePath"`
-	DownloadPath             string   `config:"DownloadPath"`
 	AnimeNameLanguage        string   `config:"AnimeNameLanguage"`
 	MenuOrder                string   `config:"MenuOrder"`
 	TrackingService          string   `config:"TrackingService"`
@@ -77,10 +76,9 @@ func defaultConfigMap() map[string]string {
 		"Player":                   "mpv",
 		"MpvArgs":                  "[]",
 		"StoragePath":              "$HOME/.local/share/curd",
-		"DownloadPath":             "$HOME",
 		"AnimeNameLanguage":        "english",
 		"SubsLanguage":             "english",
-		"MenuOrder":                "CURRENT,ALL,UNTRACKED,UPDATE,DOWNLOAD,CONTINUE_LAST,PROVIDER",
+		"MenuOrder":                "CURRENT,ALL,UNTRACKED,UPDATE,CONTINUE_LAST,PROVIDER",
 		"TrackingService":          "mal",
 		"DualTracking":             "true",
 		"SubOrDub":                 "sub",
@@ -663,13 +661,12 @@ func PopulateConfig(configMap map[string]string) CurdConfig {
 
 func getOrderedCategories(userCurdConfig *CurdConfig) []SelectionOption {
 	// Define the default categories and their labels
-	defaultOrder := []string{"CURRENT", "ALL", "UNTRACKED", "UPDATE", "DOWNLOAD", "CONTINUE_LAST", "PROVIDER"}
+	defaultOrder := []string{"CURRENT", "ALL", "UNTRACKED", "UPDATE", "CONTINUE_LAST", "PROVIDER"}
 	defaultLabels := map[string]string{
 		"CURRENT":        "Currently Watching",
 		"ALL":            "Show All",
 		"UNTRACKED":      "Untracked Watching",
 		"UPDATE":         "Update (Episode, Status, Score)",
-		"DOWNLOAD":       "Download Episodes",
 		"CONTINUE_LAST":  "Continue Last Session",
 		"PROVIDER":       "Change Provider",
 	}
@@ -704,10 +701,6 @@ func getOrderedCategories(userCurdConfig *CurdConfig) []SelectionOption {
 	// Create the final ordered slice of SelectionOptions
 	orderedCategories := make([]SelectionOption, 0, len(finalOrder))
 	for _, key := range finalOrder {
-		// Skip DOWNLOAD option in Rofi mode
-		if key == "DOWNLOAD" && userCurdConfig.RofiSelection {
-			continue
-		}
 		orderedCategories = append(orderedCategories, SelectionOption{
 			Key:   key,
 			Label: defaultLabels[key],

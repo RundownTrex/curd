@@ -1,6 +1,6 @@
 # Curd (Linux & Android Fork)
 
-A fast, keyboard-driven CLI application to stream and download anime with dual [AniList](https://anilist.co/) & [MyAnimeList](https://myanimelist.net/) tracking and Discord Rich Presence, written in Go.
+A fast, keyboard-driven CLI application to stream anime with dual [AniList](https://anilist.co/) & [MyAnimeList](https://myanimelist.net/) tracking and Discord Rich Presence, written in Go.
 
 This repository is a focused fork of [Wraient/curd](https://github.com/Wraient/curd), actively maintained and streamlined specifically for **Linux** and **Android** (via Termux + mpv-android).
 
@@ -28,21 +28,18 @@ Compared to upstream `wraient/curd`, this fork includes major architectural impr
 - **Subtitle URL Sanitization**: Built-in `cleanSubtitleURL` handles malformed or concatenated subtitle URLs.
 - **Automatic Fallback & Stuck Detection**: Automatically switches providers if a stream fails to load or drops.
 
-### 3. Episode Downloader
-- Download single episodes or batch download entire ranges with multi-provider fallback directly from the CLI.
-
-### 4. Dual Tracking (AniList + MyAnimeList)
+### 3. Dual Tracking (AniList + MyAnimeList)
 - Simultaneous synchronization with both **AniList** and **MyAnimeList**.
 - Automatically reconciles watch history and sets start dates on MyAnimeList.
 
-### 5. Desktop Discord Rich Presence Fix
+### 4. Desktop Discord Rich Presence Fix
 - Corrected Discord RPC to show dynamic `Watching <Anime Name>` status with episode number, timestamps, and cover art instead of a static application label.
 
-### 6. UI & Navigation Enhancements
+### 5. UI & Navigation Enhancements
 - Added "Back" options in menus to return to previous screens without exiting the application.
 - Refined Rofi themes and CLI feedback prompts.
 
-### 7. Streamlined CI/CD & Binary Releases
+### 6. Streamlined CI/CD & Binary Releases
 - Removed obsolete and broken Windows (Wine/Inno-Setup) and macOS pipelines.
 - Lightweight GitHub Actions CI/CD automatically building and publishing **Linux** (`x86_64`, `arm64`) and **Android** (`arm64`) binaries.
 

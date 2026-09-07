@@ -129,7 +129,7 @@ func BuildAndroidIntentCommand(config *CurdConfig, link string, title string) []
 // 3. Generic VIEW intent without component restriction
 // 4. termux-open-url (targeting component or generic)
 // 5. termux-open (generic)
-func LaunchAndroidPlayer(config *CurdConfig, link string, title string) error {
+func LaunchAndroidPlayer(config *CurdConfig, link string, title string, anime ...*Anime) error {
 	pkg := "is.xyz.mpv"
 	activity := ".MPVActivity"
 	if config != nil {
@@ -142,38 +142,92 @@ func LaunchAndroidPlayer(config *CurdConfig, link string, title string) error {
 	}
 	component := fmt.Sprintf("%s/%s", pkg, activity)
 
+	playURL := link
+	var animeObj *Anime
+	if len(anime) > 0 && anime[0] != nil {
+		animeObj = anime[0]
+	}
+	proxiedURL, proxyErr := PrepareAndroidPlaybackURL(animeObj, link)
+	if proxyErr == nil && proxiedURL != "" {
+		playURL = proxiedURL
+		Log(fmt.Sprintf("Android stream proxied for playback: %s -> %s", link, playURL))
+	} else if proxyErr != nil {
+		Log(fmt.Sprintf("Android stream proxy error (falling back to direct): %v", proxyErr))
+	}
+
+	subURL := ""
+	if strings.Contains(playURL, "/hls/") {
+		subURL = strings.Replace(playURL, "/master.m3u8", "/sub.vtt", 1)
+	} else if strings.Contains(playURL, "/file/") {
+		if idx := strings.LastIndex(playURL, "/"); idx != -1 {
+			subURL = playURL[:idx] + "/sub.vtt"
+		}
+	} else if animeObj != nil && strings.TrimSpace(animeObj.Ep.SubtitleURL) != "" {
+		subURL = strings.TrimSpace(animeObj.Ep.SubtitleURL)
+	}
+
+	var subArgs []string
+	if strings.TrimSpace(subURL) != "" {
+		subArgs = []string{
+			"-e", "subtitles_location", subURL,
+			"-e", "subs", subURL,
+		}
+	}
+
 	var lastErr error
 	amBinary := FindAndroidAmBinary()
 	if amBinary != "" {
-		// Attempt 1: am start --user 0 -a android.intent.action.VIEW -d <link> -n <component> -e title <title>
+		// Attempt 1: am start --user 0 -a android.intent.action.VIEW -d <playURL> -t "video/*" -n <component> -e title <title>
 		argsWithUser := []string{
 			"start", "--user", "0",
 			"-a", "android.intent.action.VIEW",
-			"-d", link,
+			"-d", playURL,
+			"-t", "video/*",
 			"-n", component,
 		}
 		if strings.TrimSpace(title) != "" {
 			argsWithUser = append(argsWithUser, "-e", "title", title)
 		}
+		argsWithUser = append(argsWithUser, subArgs...)
 
 		Log(fmt.Sprintf("Launching player via: %s %s", amBinary, strings.Join(argsWithUser, " ")))
 		err := tryIntentCommand(amBinary, argsWithUser)
 		if err == nil {
 			return nil
 		}
-		Log(fmt.Sprintf("am start with --user 0 failed: %v", err))
+		Log(fmt.Sprintf("am start with --user 0 (-t video/*) failed: %v", err))
 		lastErr = err
 
-		// Attempt 2: am start without --user 0
+		// Attempt 1b: am start --user 0 without -t
+		argsWithUserNoType := []string{
+			"start", "--user", "0",
+			"-a", "android.intent.action.VIEW",
+			"-d", playURL,
+			"-n", component,
+		}
+		if strings.TrimSpace(title) != "" {
+			argsWithUserNoType = append(argsWithUserNoType, "-e", "title", title)
+		}
+		argsWithUserNoType = append(argsWithUserNoType, subArgs...)
+		err = tryIntentCommand(amBinary, argsWithUserNoType)
+		if err == nil {
+			return nil
+		}
+		Log(fmt.Sprintf("am start with --user 0 (no -t) failed: %v", err))
+		lastErr = err
+
+		// Attempt 2: am start without --user 0 (-t video/*)
 		argsWithoutUser := []string{
 			"start",
 			"-a", "android.intent.action.VIEW",
-			"-d", link,
+			"-d", playURL,
+			"-t", "video/*",
 			"-n", component,
 		}
 		if strings.TrimSpace(title) != "" {
 			argsWithoutUser = append(argsWithoutUser, "-e", "title", title)
 		}
+		argsWithoutUser = append(argsWithoutUser, subArgs...)
 
 		Log(fmt.Sprintf("Retrying player via: %s %s", amBinary, strings.Join(argsWithoutUser, " ")))
 		err = tryIntentCommand(amBinary, argsWithoutUser)
@@ -183,15 +237,35 @@ func LaunchAndroidPlayer(config *CurdConfig, link string, title string) error {
 		Log(fmt.Sprintf("am start without --user failed: %v", err))
 		lastErr = err
 
+		// Attempt 2b: am start without --user (no -t)
+		argsWithoutUserNoType := []string{
+			"start",
+			"-a", "android.intent.action.VIEW",
+			"-d", playURL,
+			"-n", component,
+		}
+		if strings.TrimSpace(title) != "" {
+			argsWithoutUserNoType = append(argsWithoutUserNoType, "-e", "title", title)
+		}
+		argsWithoutUserNoType = append(argsWithoutUserNoType, subArgs...)
+		err = tryIntentCommand(amBinary, argsWithoutUserNoType)
+		if err == nil {
+			return nil
+		}
+		Log(fmt.Sprintf("am start without --user (no -t) failed: %v", err))
+		lastErr = err
+
 		// Attempt 3: am start generic VIEW intent
 		argsGeneric := []string{
 			"start",
 			"-a", "android.intent.action.VIEW",
-			"-d", link,
+			"-d", playURL,
+			"-t", "video/*",
 		}
 		if strings.TrimSpace(title) != "" {
 			argsGeneric = append(argsGeneric, "-e", "title", title)
 		}
+		argsGeneric = append(argsGeneric, subArgs...)
 		err = tryIntentCommand(amBinary, argsGeneric)
 		if err == nil {
 			return nil
@@ -204,14 +278,14 @@ func LaunchAndroidPlayer(config *CurdConfig, link string, title string) error {
 
 	// Attempt 4: termux-open-url targeting component
 	if hasCommand("termux-open-url") {
-		err := tryIntentCommand("termux-open-url", []string{link, component})
+		err := tryIntentCommand("termux-open-url", []string{playURL, component})
 		if err == nil {
 			return nil
 		}
 		Log(fmt.Sprintf("termux-open-url with component failed: %v", err))
 
 		// Attempt 5: termux-open-url generic
-		err = tryIntentCommand("termux-open-url", []string{link})
+		err = tryIntentCommand("termux-open-url", []string{playURL})
 		if err == nil {
 			return nil
 		}
@@ -221,7 +295,7 @@ func LaunchAndroidPlayer(config *CurdConfig, link string, title string) error {
 
 	// Attempt 6: termux-open
 	if hasCommand("termux-open") {
-		err := tryIntentCommand("termux-open", []string{link})
+		err := tryIntentCommand("termux-open", []string{playURL})
 		if err == nil {
 			return nil
 		}
@@ -276,7 +350,8 @@ func (m androidWaitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m androidWaitModel) View() string {
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("\033[1;36m▶ Playing:\033[0m %s - Episode %d (in external player)\n\n", m.title, m.epNum))
+	b.WriteString(fmt.Sprintf("\033[1;36m▶ Playing:\033[0m %s - Episode %d (in external player)\n", m.title, m.epNum))
+	b.WriteString("\033[1;30mStream relay active (injecting CDN headers & demuxer compatibility)\033[0m\n\n")
 	b.WriteString("Controls:\n")
 	b.WriteString("  \033[1;32m[Enter]\033[0m Mark episode as completed & proceed\n")
 	b.WriteString("  \033[1;33m[Esc]\033[0m   Change provider (if video is stuck/buffering)\n")

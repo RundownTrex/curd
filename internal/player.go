@@ -421,7 +421,7 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 
 	// Detect Android environment (runtime.GOOS == "android" or Termux environment)
 	if IsAndroid() {
-		err := LaunchAndroidPlayer(userConfig, link, title)
+		err := LaunchAndroidPlayer(userConfig, link, title, anime)
 		if err != nil {
 			CurdOut(fmt.Sprintf("Error: %v", err))
 			Log(fmt.Sprintf("LaunchAndroidPlayer error: %v", err))
