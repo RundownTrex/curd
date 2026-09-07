@@ -50,6 +50,7 @@ func DownloadEpisode(ctx context.Context, opts DownloadOptions) error {
 	}
 
 	isHLS := strings.Contains(opts.URL, ".m3u8")
+	stateFilePath := StateFilePath(tempPartPath)
 
 	if isHLS {
 		playlist, err := FetchHLSPlaylist(ctx, httpClient, opts.URL, headers, opts.Quality)
@@ -58,10 +59,9 @@ func DownloadEpisode(ctx context.Context, opts DownloadOptions) error {
 		}
 
 		hasSeparateAudio := len(playlist.AudioSegments) > 0
-		totalChunks := len(playlist.Segments)
-		if hasSeparateAudio {
-			totalChunks += len(playlist.AudioSegments)
-		}
+		totalVideoChunks := len(playlist.Segments)
+		totalAudioChunks := len(playlist.AudioSegments)
+		totalChunks := totalVideoChunks + totalAudioChunks
 
 		bar := NewTerminalProgressBar(opts.FileName, totalChunks)
 		var sharedBytes int64
@@ -70,33 +70,94 @@ func DownloadEpisode(ctx context.Context, opts DownloadOptions) error {
 			tempVideoPart := tempPartPath + ".video"
 			tempAudioPart := tempPartPath + ".audio"
 
-			videoFile, err := os.Create(tempVideoPart)
-			if err != nil {
-				return fmt.Errorf("create temp video file %q: %w", tempVideoPart, err)
+			state, _ := LoadDownloadState(stateFilePath)
+			resumeVideoFrom := 0
+			resumeAudioFrom := 0
+
+			if state != nil && state.TotalChunks == totalChunks && state.IsSeparateAudio {
+				resumeVideoFrom = state.CommittedChunks
+				resumeAudioFrom = state.AudioCommitted
+				sharedBytes = state.DownloadedBytes
+				if resumeVideoFrom > totalVideoChunks {
+					resumeVideoFrom = totalVideoChunks
+				}
+				if resumeAudioFrom > totalAudioChunks {
+					resumeAudioFrom = totalAudioChunks
+				}
+				if resumeVideoFrom > 0 || resumeAudioFrom > 0 {
+					fmt.Printf("\033[1;36m[Resume]\033[0m Found partial download for %s (resuming from chunk %d/%d)...\n", opts.FileName, resumeVideoFrom+resumeAudioFrom, totalChunks)
+				}
+			} else if state != nil {
+				// Mismatched state (e.g. source changed)
+				_ = os.Remove(tempVideoPart)
+				_ = os.Remove(tempAudioPart)
+				RemoveDownloadState(stateFilePath)
 			}
 
 			// 1. Download video segments
-			dlErr := DownloadSegmentsWithOffset(ctx, playlist.Segments, playlist.IsAES128, playlist.KeyBytes, videoFile, headers, opts.Concurrency, 0, totalChunks, &sharedBytes, bar.Update)
-			_ = videoFile.Close()
+			if resumeVideoFrom < totalVideoChunks {
+				var videoFile *os.File
+				if resumeVideoFrom > 0 {
+					videoFile, err = os.OpenFile(tempVideoPart, os.O_APPEND|os.O_WRONLY, 0644)
+				} else {
+					videoFile, err = os.Create(tempVideoPart)
+				}
+				if err != nil {
+					return fmt.Errorf("open temp video file %q: %w", tempVideoPart, err)
+				}
 
-			if dlErr != nil {
-				_ = os.Remove(tempVideoPart)
-				return fmt.Errorf("download video segments: %w", dlErr)
+				saveVideoState := func(committed int, totalBytes int64) {
+					_ = SaveDownloadState(stateFilePath, &DownloadState{
+						PlaylistURL:     opts.URL,
+						TotalChunks:     totalChunks,
+						CommittedChunks: committed,
+						DownloadedBytes: totalBytes,
+						Quality:         opts.Quality,
+						IsSeparateAudio: true,
+						AudioTotal:      totalAudioChunks,
+						AudioCommitted:  resumeAudioFrom,
+					})
+				}
+
+				dlErr := DownloadSegmentsResume(ctx, playlist.Segments, playlist.IsAES128, playlist.KeyBytes, videoFile, headers, opts.Concurrency, resumeVideoFrom, 0, totalChunks, &sharedBytes, sharedBytes, saveVideoState, bar.Update)
+				_ = videoFile.Close()
+
+				if dlErr != nil {
+					// Preserve files on error so user can resume
+					return fmt.Errorf("download video segments: %w", dlErr)
+				}
+				resumeVideoFrom = totalVideoChunks
 			}
 
 			// 2. Download audio segments
-			audioFile, err := os.Create(tempAudioPart)
+			var audioFile *os.File
+			if resumeAudioFrom > 0 {
+				audioFile, err = os.OpenFile(tempAudioPart, os.O_APPEND|os.O_WRONLY, 0644)
+			} else {
+				audioFile, err = os.Create(tempAudioPart)
+			}
 			if err != nil {
-				_ = os.Remove(tempVideoPart)
-				return fmt.Errorf("create temp audio file %q: %w", tempAudioPart, err)
+				return fmt.Errorf("open temp audio file %q: %w", tempAudioPart, err)
 			}
 
-			audioErr := DownloadSegmentsWithOffset(ctx, playlist.AudioSegments, playlist.AudioIsAES128, playlist.AudioKeyBytes, audioFile, headers, opts.Concurrency, len(playlist.Segments), totalChunks, &sharedBytes, bar.Update)
+			saveAudioState := func(committed int, totalBytes int64) {
+				_ = SaveDownloadState(stateFilePath, &DownloadState{
+					PlaylistURL:     opts.URL,
+					TotalChunks:     totalChunks,
+					CommittedChunks: totalVideoChunks,
+					DownloadedBytes: totalBytes,
+					Quality:         opts.Quality,
+					IsSeparateAudio: true,
+					AudioTotal:      totalAudioChunks,
+					AudioCommitted:  committed,
+				})
+			}
+
+			audioErr := DownloadSegmentsResume(ctx, playlist.AudioSegments, playlist.AudioIsAES128, playlist.AudioKeyBytes, audioFile, headers, opts.Concurrency, resumeAudioFrom, totalVideoChunks, totalChunks, &sharedBytes, sharedBytes, saveAudioState, bar.Update)
 			_ = audioFile.Close()
 
 			if audioErr != nil {
-				_ = os.Remove(tempVideoPart)
-				_ = os.Remove(tempAudioPart)
+				// Preserve files on error so user can resume
 				return fmt.Errorf("download audio segments: %w", audioErr)
 			}
 
@@ -104,24 +165,64 @@ func DownloadEpisode(ctx context.Context, opts DownloadOptions) error {
 			if err := FinalizeAudioVideo(tempVideoPart, tempAudioPart, finalVideoPath); err != nil {
 				return fmt.Errorf("finalize audio/video mux %q: %w", finalVideoPath, err)
 			}
+			RemoveDownloadState(stateFilePath)
 		} else {
 			// Multiplexed single stream (e.g. AniNeko)
-			partFile, err := os.Create(tempPartPath)
-			if err != nil {
-				return fmt.Errorf("create temp file %q: %w", tempPartPath, err)
+			state, _ := LoadDownloadState(stateFilePath)
+			resumeFrom := 0
+			var initialBytes int64
+
+			if state != nil && state.TotalChunks == totalChunks && !state.IsSeparateAudio {
+				if fi, err := os.Stat(tempPartPath); err == nil && fi.Size() > 0 {
+					resumeFrom = state.CommittedChunks
+					initialBytes = state.DownloadedBytes
+					sharedBytes = initialBytes
+					if resumeFrom > totalChunks {
+						resumeFrom = totalChunks
+					}
+					if resumeFrom > 0 {
+						fmt.Printf("\033[1;36m[Resume]\033[0m Found partial download for %s (resuming from chunk %d/%d)...\n", opts.FileName, resumeFrom, totalChunks)
+					}
+				}
+			} else if state != nil {
+				// Mismatched state (e.g. source changed)
+				_ = os.Remove(tempPartPath)
+				RemoveDownloadState(stateFilePath)
 			}
 
-			dlErr := DownloadSegmentsWithOffset(ctx, playlist.Segments, playlist.IsAES128, playlist.KeyBytes, partFile, headers, opts.Concurrency, 0, totalChunks, &sharedBytes, bar.Update)
+			var partFile *os.File
+			if resumeFrom > 0 {
+				partFile, err = os.OpenFile(tempPartPath, os.O_APPEND|os.O_WRONLY, 0644)
+			} else {
+				partFile, err = os.Create(tempPartPath)
+			}
+			if err != nil {
+				return fmt.Errorf("open temp file %q: %w", tempPartPath, err)
+			}
+
+			saveState := func(committed int, totalBytes int64) {
+				_ = SaveDownloadState(stateFilePath, &DownloadState{
+					PlaylistURL:     opts.URL,
+					TotalChunks:     totalChunks,
+					CommittedChunks: committed,
+					DownloadedBytes: totalBytes,
+					Quality:         opts.Quality,
+					IsSeparateAudio: false,
+				})
+			}
+
+			dlErr := DownloadSegmentsResume(ctx, playlist.Segments, playlist.IsAES128, playlist.KeyBytes, partFile, headers, opts.Concurrency, resumeFrom, 0, totalChunks, &sharedBytes, initialBytes, saveState, bar.Update)
 			_ = partFile.Close()
 
 			if dlErr != nil {
-				_ = os.Remove(tempPartPath)
+				// Preserve file on error so user can resume
 				return fmt.Errorf("download segments: %w", dlErr)
 			}
 
 			if err := FinalizeVideo(tempPartPath, finalVideoPath); err != nil {
 				return fmt.Errorf("finalize video file %q: %w", finalVideoPath, err)
 			}
+			RemoveDownloadState(stateFilePath)
 		}
 
 		fi, _ := os.Stat(finalVideoPath)
@@ -133,7 +234,6 @@ func DownloadEpisode(ctx context.Context, opts DownloadOptions) error {
 	} else {
 		// Direct video download (MP4, MKV, etc.)
 		if err := downloadDirect(ctx, httpClient, opts.URL, tempPartPath, headers, opts.FileName); err != nil {
-			_ = os.Remove(tempPartPath)
 			return fmt.Errorf("direct download: %w", err)
 		}
 
@@ -156,6 +256,11 @@ func DownloadEpisode(ctx context.Context, opts DownloadOptions) error {
 }
 
 func downloadDirect(ctx context.Context, client *http.Client, targetURL, tempPath string, headers map[string]string, title string) error {
+	var existingBytes int64
+	if fi, err := os.Stat(tempPath); err == nil {
+		existingBytes = fi.Size()
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return err
@@ -167,26 +272,43 @@ func downloadDirect(ctx context.Context, client *http.Client, targetURL, tempPat
 		}
 	}
 
+	if existingBytes > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingBytes))
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP status %d", resp.StatusCode)
-	}
+	var out *os.File
+	var totalBytes int64
 
-	out, err := os.Create(tempPath)
-	if err != nil {
-		return err
+	if existingBytes > 0 && resp.StatusCode == http.StatusPartialContent {
+		// 206 Partial Content: resume appending
+		out, err = os.OpenFile(tempPath, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return err
+		}
+		totalBytes = existingBytes + resp.ContentLength
+		fmt.Printf("\033[1;36m[Resume]\033[0m Continuing direct download from byte %d...\n", existingBytes)
+	} else {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("HTTP status %d", resp.StatusCode)
+		}
+		out, err = os.Create(tempPath)
+		if err != nil {
+			return err
+		}
+		existingBytes = 0
+		totalBytes = resp.ContentLength
 	}
 	defer out.Close()
 
-	totalBytes := resp.ContentLength
 	bar := NewTerminalProgressBar(title, 1)
 
-	var downloaded int64
+	downloaded := existingBytes
 	buf := make([]byte, 64*1024)
 	startTime := time.Now()
 	var lastReport time.Time
@@ -205,13 +327,16 @@ func downloadDirect(ctx context.Context, client *http.Client, targetURL, tempPat
 				elapsed := now.Sub(startTime).Seconds()
 				var speed float64
 				if elapsed > 0 {
-					speed = float64(downloaded) / elapsed
+					sessionBytes := downloaded - existingBytes
+					if sessionBytes > 0 {
+						speed = float64(sessionBytes) / elapsed
+					}
 				}
 				var percent float64
 				var eta time.Duration
 				if totalBytes > 0 {
 					percent = (float64(downloaded) / float64(totalBytes)) * 100.0
-					if speed > 0 {
+					if speed > 0 && downloaded < totalBytes {
 						eta = time.Duration(float64(totalBytes-downloaded)/speed) * time.Second
 					}
 				}
@@ -237,3 +362,4 @@ func downloadDirect(ctx context.Context, client *http.Client, targetURL, tempPat
 	bar.Finish(tempPath, downloaded)
 	return nil
 }
+

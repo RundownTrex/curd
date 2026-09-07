@@ -114,7 +114,7 @@ func DownloadMenu(userCurdConfig *CurdConfig) {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		CurdOut("\n\033[1;33mDownload interrupted by user. Cleaning up...\033[0m")
+		CurdOut("\n\033[1;33mDownload paused. Progress has been saved.\033[0m")
 		cancel()
 	}()
 

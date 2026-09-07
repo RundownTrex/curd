@@ -40,11 +40,24 @@ func DownloadSegments(ctx context.Context, playlist *HLSPlaylist, writer io.Writ
 
 // DownloadSegmentsWithOffset downloads a list of segments with an offset and total count (for video + audio tracks).
 func DownloadSegmentsWithOffset(ctx context.Context, segments []HLSSegment, isAES128 bool, keyBytes []byte, writer io.Writer, headers map[string]string, concurrency int, chunkOffset int, totalAllChunks int, sharedByteCounter *int64, progressCb ProgressFunc) error {
+	return DownloadSegmentsResume(ctx, segments, isAES128, keyBytes, writer, headers, concurrency, 0, chunkOffset, totalAllChunks, sharedByteCounter, 0, nil, progressCb)
+}
+
+// DownloadSegmentsResume downloads a list of segments starting from startIndex (for resuming interrupted downloads).
+func DownloadSegmentsResume(ctx context.Context, segments []HLSSegment, isAES128 bool, keyBytes []byte, writer io.Writer, headers map[string]string, concurrency int, startIndex int, chunkOffset int, totalAllChunks int, sharedByteCounter *int64, initialBytes int64, onProgressSave func(committedIndex int, totalBytes int64), progressCb ProgressFunc) error {
 	if concurrency <= 0 {
 		concurrency = 3
 	}
 	if totalAllChunks <= 0 {
 		totalAllChunks = len(segments)
+	}
+	if startIndex < 0 {
+		startIndex = 0
+	}
+
+	totalSegments := len(segments)
+	if totalSegments == 0 || startIndex >= totalSegments {
+		return nil
 	}
 
 	transport := &http.Transport{
@@ -56,11 +69,6 @@ func DownloadSegmentsWithOffset(ctx context.Context, segments []HLSSegment, isAE
 	}
 	client := &http.Client{
 		Transport: transport,
-	}
-
-	totalSegments := len(segments)
-	if totalSegments == 0 {
-		return nil
 	}
 
 	var aesBlock cipher.Block
@@ -75,7 +83,7 @@ func DownloadSegmentsWithOffset(ctx context.Context, segments []HLSSegment, isAE
 	taskCh := make(chan HLSSegment, concurrency*2)
 	resultCh := make(chan segmentResult, concurrency*2)
 
-	var localDownloadedBytes int64
+	var localDownloadedBytes int64 = initialBytes
 	byteCallback := func(n int64) {
 		atomic.AddInt64(&localDownloadedBytes, n)
 		if sharedByteCounter != nil {
@@ -107,10 +115,10 @@ func DownloadSegmentsWithOffset(ctx context.Context, segments []HLSSegment, isAE
 		}()
 	}
 
-	// Feed tasks to workers
+	// Feed tasks to workers starting from startIndex
 	go func() {
 		defer close(taskCh)
-		for _, seg := range segments {
+		for _, seg := range segments[startIndex:] {
 			select {
 			case <-ctx.Done():
 				return
@@ -128,7 +136,7 @@ func DownloadSegmentsWithOffset(ctx context.Context, segments []HLSSegment, isAE
 	// Real-time progress ticker for live byte streaming updates
 	stopTicker := make(chan struct{})
 	startTime := time.Now()
-	var currentCommittedChunks int32
+	var currentCommittedChunks int32 = int32(startIndex)
 
 	if progressCb != nil {
 		go func() {
@@ -151,14 +159,20 @@ func DownloadSegmentsWithOffset(ctx context.Context, segments []HLSSegment, isAE
 					elapsed := time.Since(startTime).Seconds()
 					var speed float64
 					if elapsed > 0 {
-						speed = float64(totalBytes) / elapsed
+						// Calculate speed based on bytes downloaded in this session
+						sessionBytes := totalBytes - initialBytes
+						if sessionBytes > 0 {
+							speed = float64(sessionBytes) / elapsed
+						}
 					}
 
 					doneChunks := int(atomic.LoadInt32(&currentCommittedChunks)) + chunkOffset
 					var eta time.Duration
-					if speed > 0 && doneChunks > 0 && doneChunks < totalAllChunks {
+					if speed > 0 && doneChunks > startIndex+chunkOffset && doneChunks < totalAllChunks {
 						remChunks := totalAllChunks - doneChunks
-						avgBytes := float64(totalBytes) / float64(doneChunks)
+						sessionChunksDone := doneChunks - (startIndex + chunkOffset)
+						sessionBytes := totalBytes - initialBytes
+						avgBytes := float64(sessionBytes) / float64(sessionChunksDone)
 						eta = time.Duration((float64(remChunks)*avgBytes)/speed) * time.Second
 					}
 
@@ -182,11 +196,20 @@ func DownloadSegmentsWithOffset(ctx context.Context, segments []HLSSegment, isAE
 
 	// Ordered writer loop
 	pending := make(map[int][]byte)
-	nextExpected := 0
+	nextExpected := startIndex
 
 	for res := range resultCh {
 		if res.err != nil {
 			close(stopTicker)
+			if onProgressSave != nil {
+				var b int64
+				if sharedByteCounter != nil {
+					b = atomic.LoadInt64(sharedByteCounter)
+				} else {
+					b = atomic.LoadInt64(&localDownloadedBytes)
+				}
+				onProgressSave(nextExpected, b)
+			}
 			return fmt.Errorf("segment %d failed: %w", res.index, res.err)
 		}
 
@@ -207,10 +230,29 @@ func DownloadSegmentsWithOffset(ctx context.Context, segments []HLSSegment, isAE
 
 			nextExpected++
 			atomic.StoreInt32(&currentCommittedChunks, int32(nextExpected))
+			if onProgressSave != nil {
+				var b int64
+				if sharedByteCounter != nil {
+					b = atomic.LoadInt64(sharedByteCounter)
+				} else {
+					b = atomic.LoadInt64(&localDownloadedBytes)
+				}
+				onProgressSave(nextExpected, b)
+			}
 		}
 	}
 
 	close(stopTicker)
+
+	if onProgressSave != nil {
+		var b int64
+		if sharedByteCounter != nil {
+			b = atomic.LoadInt64(sharedByteCounter)
+		} else {
+			b = atomic.LoadInt64(&localDownloadedBytes)
+		}
+		onProgressSave(nextExpected, b)
+	}
 
 	if nextExpected < totalSegments {
 		return fmt.Errorf("download incomplete: received %d/%d segments", nextExpected, totalSegments)
@@ -228,7 +270,10 @@ func DownloadSegmentsWithOffset(ctx context.Context, segments []HLSSegment, isAE
 		elapsed := time.Since(startTime).Seconds()
 		var speed float64
 		if elapsed > 0 {
-			speed = float64(totalBytes) / elapsed
+			sessionBytes := totalBytes - initialBytes
+			if sessionBytes > 0 {
+				speed = float64(sessionBytes) / elapsed
+			}
 		}
 		percent := 100.0
 		if totalAllChunks > 0 {
@@ -246,6 +291,7 @@ func DownloadSegmentsWithOffset(ctx context.Context, segments []HLSSegment, isAE
 
 	return nil
 }
+
 
 func fetchSegmentWithRetry(ctx context.Context, client *http.Client, seg HLSSegment, headers map[string]string, aesBlock cipher.Block, byteProgress func(n int64)) ([]byte, error) {
 	const maxRetries = 4

@@ -101,20 +101,41 @@ jobs:
           if echo "${{ github.event.head_commit.message }}" | grep -qiE "release:"; then
             echo "RELEASE_TAG=v$CURD_VERSION" >> $GITHUB_ENV
             echo "RELEASE_TITLE=Curd v$CURD_VERSION" >> $GITHUB_ENV
+            echo "IS_VERSION_RELEASE=true" >> $GITHUB_ENV
           else
             echo "RELEASE_TAG=latest" >> $GITHUB_ENV
             echo "RELEASE_TITLE=Curd (Latest Build)" >> $GITHUB_ENV
+            echo "IS_VERSION_RELEASE=false" >> $GITHUB_ENV
           fi
+
+      - name: Force update latest git tag
+        if: env.RELEASE_TAG == 'latest'
+        env:
+          TOKEN: ${{ secrets.ACTIONS_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f latest ${{ github.sha }}
+          git push "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git" -f latest
+
+      - name: Delete existing release assets (allow overwrite)
+        env:
+          GH_TOKEN: ${{ secrets.ACTIONS_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          for asset in curd-linux-x86_64 curd-linux-arm64 curd-android-arm64; do
+            gh release delete-asset "${{ env.RELEASE_TAG }}" "$asset" -y 2>/dev/null || true
+          done
 
       - name: Create or Update Release
         id: create_release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TITLE }}
           target_commitish: main
           draft: false
           prerelease: false
+          make_latest: true
           generate_release_notes: true 
           files: |
             release_assets/curd-linux-x86_64
@@ -122,3 +143,19 @@ jobs:
             release_assets/curd-android-arm64
         env:
           GITHUB_TOKEN: ${{ secrets.ACTIONS_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Sync latest rolling release on version release
+        if: env.IS_VERSION_RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.ACTIONS_PAT || secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.ACTIONS_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f latest ${{ github.sha }}
+          git push "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git" -f latest
+          for asset in curd-linux-x86_64 curd-linux-arm64 curd-android-arm64; do
+            gh release delete-asset "latest" "$asset" -y 2>/dev/null || true
+          done
+          gh release upload "latest" release_assets/* --clobber || true
+
