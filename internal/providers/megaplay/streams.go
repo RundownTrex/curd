@@ -44,6 +44,13 @@ func getEpisodeStreamsForMode(malIDStr string, config providers.PlaybackConfig, 
 
 	// Step 4: Extract HLS stream URL.
 	streamURL := strings.TrimSpace(payload.streamFile())
+	if streamURL == "" && payload.Enc != "" {
+		var decErr error
+		streamURL, decErr = decryptMegaPlayEnc(payload.Enc)
+		if decErr != nil {
+			return nil, nil, fmt.Errorf("megaplay decrypt stream enc for mal %d ep %d: %w", malID, epNo, decErr)
+		}
+	}
 	if streamURL == "" {
 		return nil, nil, fmt.Errorf("megaplay stream url missing for mal %d ep %d", malID, epNo)
 	}

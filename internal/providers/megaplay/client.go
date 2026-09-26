@@ -15,7 +15,17 @@ const userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, li
 var (
 	megaplayBaseURL = "https://megaplay.buzz"
 	anilistGQLURL   = "https://graphql.anilist.co"
+	defaultHTTPClient = &http.Client{}
 )
+
+func getClient() *http.Client {
+	if curdhost.HTTPClient != nil {
+		if c := curdhost.HTTPClient(); c != nil {
+			return c
+		}
+	}
+	return defaultHTTPClient
+}
 
 func newRequest(method, rawURL, referer string) (*http.Request, error) {
 	req, err := http.NewRequest(method, rawURL, nil)
@@ -34,7 +44,7 @@ func fetchString(rawURL, referer string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := curdhost.HTTPClient().Do(req)
+	resp, err := getClient().Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -59,7 +69,7 @@ func fetchJSON(rawURL, referer string, dest any) error {
 	// megaplay.buzz/stream/getSources now requires AJAX requests only.
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
-	resp, err := curdhost.HTTPClient().Do(req)
+	resp, err := getClient().Do(req)
 	if err != nil {
 		return err
 	}
@@ -105,7 +115,7 @@ func searchAniList(query string) (*anilistResponse, error) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := curdhost.HTTPClient().Do(req)
+	resp, err := getClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +150,7 @@ func fetchAniListByMalID(malID int) (*anilistMedia, error) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := curdhost.HTTPClient().Do(req)
+	resp, err := getClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -31,12 +31,13 @@ type anilistMedia struct {
 // we use sourcesRaw to handle both cases.
 type megaplaySourcesResponse struct {
 	SourcesRaw interface{} `json:"sources"`
+	Enc        string      `json:"enc"`
 	Tracks     []subTrack  `json:"tracks"`
 	Captions   []subTrack  `json:"captions"`
 	Subtitles  []subTrack  `json:"subtitles"`
 }
 
-// streamFile extracts the HLS stream URL from the polymorphic sources field.
+// streamFile extracts the HLS stream URL from the polymorphic sources field or decrypts the enc field.
 func (m *megaplaySourcesResponse) streamFile() string {
 	switch v := m.SourcesRaw.(type) {
 	case string:
@@ -52,6 +53,11 @@ func (m *megaplaySourcesResponse) streamFile() string {
 					return f
 				}
 			}
+		}
+	}
+	if m.Enc != "" {
+		if decrypted, err := decryptMegaPlayEnc(m.Enc); err == nil && decrypted != "" {
+			return decrypted
 		}
 	}
 	return ""

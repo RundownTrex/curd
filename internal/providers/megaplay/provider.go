@@ -5,6 +5,11 @@ import "github.com/wraient/curd/internal/providers"
 // Provider implements megaplay.buzz direct MAL-ID-based stream resolution.
 type Provider struct{}
 
+// New creates a new MegaPlay provider instance.
+func New() *Provider {
+	return &Provider{}
+}
+
 func (p *Provider) Name() string {
 	return "megaplay"
 }

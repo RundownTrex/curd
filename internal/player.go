@@ -304,8 +304,12 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 	// 2. Krussdomi uses .jpg for HLS video chunks, requiring allowed_segment_extensions=ALL and extension_picky=0.
 	providerName := strings.ToLower(CurrentAnimeProviderName(anime))
 	isKickAss := providerName == "kickassanime" || strings.Contains(link, "krussdomi.com")
-	if isKickAss {
+	isMegaPlay := providerName == "megaplay" || strings.Contains(link, "nexabloom.top") || strings.Contains(link, "solarhaven.top")
+	if isKickAss || isMegaPlay {
 		origin := "https://krussdomi.com"
+		if isMegaPlay {
+			origin = "https://megaplay.buzz"
+		}
 		if referrer != "" {
 			if u, err := url.Parse(referrer); err == nil && u.Scheme != "" && u.Host != "" {
 				origin = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
@@ -322,8 +326,11 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 		// Reuse existing socket
 		mpvSocketPath = anime.Ep.Player.SocketPath
 
-		if isKickAss {
+		if isKickAss || isMegaPlay {
 			origin := "https://krussdomi.com"
+			if isMegaPlay {
+				origin = "https://megaplay.buzz"
+			}
 			activeRef := strings.TrimSpace(anime.Ep.StreamReferrer)
 			if activeRef != "" {
 				if u, err := url.Parse(activeRef); err == nil && u.Scheme != "" && u.Host != "" {
