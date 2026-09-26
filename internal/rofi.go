@@ -10,8 +10,8 @@ import (
 )
 
 func GetTokenFromRofi() (string, error) {
-	// The URL to open - using authorization code flow for consistency
-	url := "https://anilist.co/api/v2/oauth/authorize?client_id=20686&response_type=code&redirect_uri=http://localhost:8000/oauth/callback"
+	// The URL to open - using implicit token flow
+	url := "https://anilist.co/api/v2/oauth/authorize?client_id=20686&response_type=token&redirect_uri=http://localhost:8000/oauth/callback"
 
 	// Use rofi to display a prompt with the URL
 	message := "Press enter to open the anilist token page in your browser"
@@ -27,12 +27,12 @@ func GetTokenFromRofi() (string, error) {
 	}
 
 	// Use rofi again to get the token input from the user
-	token, err := GetUserInputFromRofi("Enter the token (from the redirect URL after 'access_token=')")
+	token, err := GetUserInputFromRofi("Enter the token (or full redirect URL after 'access_token=')")
 	if err != nil {
 		return "", err
 	}
 
-	return token, nil
+	return cleanAccessToken(token), nil
 }
 
 // GetUserInputFromRofi prompts the user for input using Rofi with a custom message

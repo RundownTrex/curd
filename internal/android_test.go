@@ -284,4 +284,25 @@ func TestGetAnimeIDAndImage_InvalidID(t *testing.T) {
 	}
 }
 
+func TestCleanAccessToken(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"eyJhbGciOi...", "eyJhbGciOi..."},
+		{"http://localhost:8000/oauth/callback#access_token=my_secret_token&token_type=Bearer&expires_in=31536000", "my_secret_token"},
+		{"access_token=my_secret_token&token_type=Bearer", "my_secret_token"},
+		{"  \"my_secret_token\"  ", "my_secret_token"},
+		{"http://localhost:8000/oauth/callback#access_token=my_token", "my_token"},
+	}
+
+	for _, tt := range tests {
+		got := cleanAccessToken(tt.input)
+		if got != tt.want {
+			t.Errorf("cleanAccessToken(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+
 

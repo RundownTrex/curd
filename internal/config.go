@@ -323,11 +323,25 @@ func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error)
 		Handler: mux,
 	}
 
-	// Handle OAuth callback - for authorization code grant, code comes in query params
-	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
-		code := r.URL.Query().Get("code")
-		errorParam := r.URL.Query().Get("error")
+	// Endpoint called by browser JavaScript to deliver the access token from URL hash fragment
+	mux.HandleFunc("/oauth/save_token", func(w http.ResponseWriter, r *http.Request) {
+		token := cleanAccessToken(r.URL.Query().Get("token"))
+		if token != "" {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "OK")
+			select {
+			case callbackCh <- token:
+			default:
+			}
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+	})
 
+	// Handle OAuth callback
+	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
+		errorParam := r.URL.Query().Get("error")
 		w.Header().Set("Content-Type", "text/html")
 
 		if errorParam != "" {
@@ -347,86 +361,94 @@ func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error)
 </body>
 </html>`, errorParam)
 			fmt.Fprint(w, html)
-			errCh <- fmt.Errorf("oauth error: %s", errorParam)
+			select {
+			case errCh <- fmt.Errorf("oauth error: %s", errorParam):
+			default:
+			}
 			return
 		}
 
-		if code == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			html := `<!DOCTYPE html>
-<html>
-<head>
-    <title>Curd Authentication</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #1a1a1a; color: white; }
-        .error { color: #f44336; font-size: 18px; margin-bottom: 20px; }
-    </style>
-</head>
-<body>
-    <div class="error">No authorization code received</div>
-    <p>You can close this window and try again.</p>
-</body>
-</html>`
-			fmt.Fprint(w, html)
-			errCh <- fmt.Errorf("no authorization code received")
-			return
+		// Also support code grant fallback if present
+		if code := r.URL.Query().Get("code"); code != "" {
+			go func() {
+				tokenURL := fmt.Sprintf("%s/token", anilistOAuthURL)
+				data := url.Values{
+					"grant_type":    {"authorization_code"},
+					"client_id":     {anilistClientID},
+					"client_secret": {anilistClientSecret},
+					"redirect_uri":  {anilistRedirectURI},
+					"code":          {code},
+				}
+
+				req, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(data.Encode()))
+				if err != nil {
+					return
+				}
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				req.Header.Set("Accept", "application/json")
+				req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
+
+				client := sharedHTTPClient
+				if client == nil {
+					client = &http.Client{Timeout: 15 * time.Second}
+				}
+				resp, err := client.Do(req)
+				if err != nil {
+					return
+				}
+				defer resp.Body.Close()
+
+				if resp.StatusCode == http.StatusOK {
+					var tokenResponse struct {
+						AccessToken string `json:"access_token"`
+					}
+					if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err == nil && tokenResponse.AccessToken != "" {
+						select {
+						case callbackCh <- tokenResponse.AccessToken:
+						default:
+						}
+					}
+				}
+			}()
 		}
 
-		// Exchange authorization code for access token
-		go func() {
-			tokenURL := fmt.Sprintf("%s/token", anilistOAuthURL)
-			data := url.Values{
-				"grant_type":    {"authorization_code"},
-				"client_id":     {anilistClientID},
-				"client_secret": {anilistClientSecret},
-				"redirect_uri":  {anilistRedirectURI},
-				"code":          {code},
-			}
-
-			resp, err := http.PostForm(tokenURL, data)
-			if err != nil {
-				errCh <- fmt.Errorf("failed to exchange code for token: %w", err)
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				errCh <- fmt.Errorf("token exchange failed with status: %d", resp.StatusCode)
-				return
-			}
-
-			var tokenResponse struct {
-				AccessToken string `json:"access_token"`
-				TokenType   string `json:"token_type"`
-				ExpiresIn   int    `json:"expires_in"`
-			}
-
-			if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
-				errCh <- fmt.Errorf("failed to parse token response: %w", err)
-				return
-			}
-
-			if tokenResponse.AccessToken == "" {
-				errCh <- fmt.Errorf("no access token in response")
-				return
-			}
-
-			callbackCh <- tokenResponse.AccessToken
-		}()
-
-		// Show success page immediately
+		// Return page that extracts token from hash fragment and sends to /oauth/save_token
 		html := `<!DOCTYPE html>
 <html>
 <head>
     <title>Curd Authentication</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #1a1a1a; color: white; }
-        .loading { color: #2196F3; font-size: 18px; margin-bottom: 20px; }
+        .success { color: #4CAF50; font-size: 20px; margin-bottom: 20px; }
+        .loading { color: #2196F3; font-size: 20px; margin-bottom: 20px; }
+        .error { color: #f44336; font-size: 20px; margin-bottom: 20px; }
     </style>
 </head>
 <body>
-    <div class="loading">Processing authentication...</div>
-    <p>Exchanging authorization code for token. You can close this window.</p>
+    <div id="status" class="loading">Processing authentication...</div>
+    <p id="msg">Please wait while Curd connects to your AniList account.</p>
+    <script>
+        const hash = window.location.hash.substring(1);
+        const params = new URLSearchParams(hash);
+        const token = params.get('access_token');
+        if (token) {
+            fetch('/oauth/save_token?token=' + encodeURIComponent(token))
+                .then(r => {
+                    if (r.ok) {
+                        document.getElementById('status').className = 'success';
+                        document.getElementById('status').innerText = 'Authentication Successful!';
+                        document.getElementById('msg').innerText = 'You can close this tab and return to Curd.';
+                    } else {
+                        document.getElementById('status').className = 'error';
+                        document.getElementById('status').innerText = 'Failed to save token.';
+                    }
+                })
+                .catch(() => {
+                    document.getElementById('status').className = 'error';
+                    document.getElementById('status').innerText = 'Error communicating with Curd.';
+                });
+        }
+    </script>
 </body>
 </html>`
 		fmt.Fprint(w, html)
@@ -443,8 +465,8 @@ func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error)
 	// Give server a moment to start
 	time.Sleep(100 * time.Millisecond)
 
-	// Open browser for authentication using Authorization Code Grant flow (response_type=code)
-	authURL := fmt.Sprintf("%s/authorize?client_id=%s&redirect_uri=%s&response_type=code",
+	// Open browser for authentication using Implicit Grant flow (response_type=token)
+	authURL := fmt.Sprintf("%s/authorize?client_id=%s&redirect_uri=%s&response_type=token",
 		anilistOAuthURL,
 		anilistClientID,
 		url.QueryEscape(anilistRedirectURI))
@@ -545,6 +567,18 @@ func GetTokenFromFile(tokenPath string) (string, error) {
 	return plainToken, nil
 }
 
+// cleanAccessToken extracts the token if a full URL or fragment was pasted
+func cleanAccessToken(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if idx := strings.Index(raw, "access_token="); idx != -1 {
+		raw = raw[idx+len("access_token="):]
+		if amp := strings.Index(raw, "&"); amp != -1 {
+			raw = raw[:amp]
+		}
+	}
+	return strings.Trim(strings.TrimSpace(raw), "\"'")
+}
+
 func ChangeToken(config *CurdConfig, user *User) {
 	var err error
 	tokenPath := filepath.Join(os.ExpandEnv(config.StoragePath), "anilist_token.json")
@@ -559,9 +593,17 @@ func ChangeToken(config *CurdConfig, user *User) {
 		fmt.Println("Falling back to manual token entry...")
 
 		// Simple CLI fallback
-		fmt.Println("Please visit: https://anilist.co/api/v2/oauth/authorize?client_id=20686&response_type=token&redirect_uri=http://localhost:8000/oauth/callback")
-		fmt.Print("Copy and paste your access token here: ")
-		fmt.Scanln(&user.Token)
+		fmt.Println("\nTo get your token manually:")
+		fmt.Println("1. Open this URL in your browser:")
+		fmt.Println("   https://anilist.co/api/v2/oauth/authorize?client_id=20686&response_type=token&redirect_uri=http://localhost:8000/oauth/callback")
+		fmt.Println("2. Click 'Authorize'.")
+		fmt.Println("3. Your browser will redirect to a URL like: http://localhost:8000/oauth/callback#access_token=... (it is normal if the page says 'Unable to connect').")
+		fmt.Println("4. Copy the access token (or copy the entire redirect URL from your browser's address bar).")
+		fmt.Print("\nPaste your access token (or redirect URL) here: ")
+
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		user.Token = cleanAccessToken(input)
 
 		if user.Token == "" {
 			ExitCurd(fmt.Errorf("no token provided"))

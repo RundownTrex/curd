@@ -229,6 +229,8 @@ func ProviderDisplayName(name string) string {
 		return "MegaPlay"
 	case "senshi":
 		return "Senshi"
+	case "hianime":
+		return "HiAnime"
 	case "allanime", "mkissa":
 		return "Mkissa"
 	default:

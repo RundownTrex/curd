@@ -20,7 +20,7 @@ Compared to upstream `wraient/curd`, this fork includes major architectural impr
 - **Automated Termux Installer**: One-line script to install or update prebuilt arm64 binaries.
 
 ### 2. Modernized & Hardened Provider Stack
-- **New Providers**: Added **KickAssAnime**, **AniDB**, and **MegaPlay** with AniList search matching.
+- **New Providers**: Added **HiAnime** (ani-cli provider with ZokoAnime deobfuscation and direct HLS), **KickAssAnime**, **AniDB**, and **MegaPlay** with AniList search matching.
 - **Rebranded & Updated AllAnime (Mkissa)**: Migrated endpoints (`mkissa.to`, `isekai2nd.com`), implemented dynamic API authentication key generation, and added AES-256-CTR decryption for stream data.
 - **AniNeko Integration**: Scrapes both soft-sub (`.vtt`) and hard-sub servers with automatic subtitle track loading.
 - **Removed Broken Dependencies**: Completely removed deprecated **Animepahe** scrapers, eliminating heavy headless Chromium requirements.
@@ -207,7 +207,7 @@ curd -e
 | Option | Type | Values | Description |
 |--------|------|--------|-------------|
 | `TrackingRemote` | Enum | `none`, `anilist`, `myanimelist`, `anilist+myanimelist` | Remote tracking service to sync progress with. |
-| `Provider` | List | `stacked`, `["kickassanime"]`, `["anidb"]`, `["senshi"]`, `["megaplay"]`, `["anineko"]`, `["allanime"]` | Provider order. `stacked` tries all providers sequentially. |
+| `Provider` | List | `stacked`, `["hianime"]`, `["kickassanime"]`, `["anidb"]`, `["senshi"]`, `["megaplay"]`, `["anineko"]`, `["allanime"]` | Provider order. `stacked` tries all providers sequentially. |
 | `SubOrDub` | Enum | `sub`, `dub` | Audio preference. |
 | `SubStyle` | Enum | `ask`, `soft`, `hard` | Subtitle preference when both soft and hard subs are available. |
 | `PercentageToMarkComplete` | Integer | `0` - `100` | Minimum percentage watched to count as complete. |
