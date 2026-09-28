@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildAndroidIntentCommand(t *testing.T) {
@@ -304,5 +305,43 @@ func TestCleanAccessToken(t *testing.T) {
 	}
 }
 
+func TestExtractCode(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"http://localhost:8000/oauth/callback?code=def5020_auth_code_xyz", "def5020_auth_code_xyz"},
+		{"http://localhost:8000/oauth/callback?code=def5020_auth_code_xyz&state=abc", "def5020_auth_code_xyz"},
+		{"code=my_code_123", "my_code_123"},
+		{"code=my_code_123#frag", "my_code_123"},
+		{"invalid_string", ""},
+	}
 
+	for _, tt := range tests {
+		got := extractCode(tt.input)
+		if got != tt.want {
+			t.Errorf("extractCode(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
 
+func TestIsTokenValid(t *testing.T) {
+	if isTokenValid(nil) {
+		t.Errorf("expected nil token to be invalid")
+	}
+	if isTokenValid(&AnilistToken{AccessToken: ""}) {
+		t.Errorf("expected empty token to be invalid")
+	}
+	// Zero expiration should be considered valid (legacy format)
+	if !isTokenValid(&AnilistToken{AccessToken: "valid_token", ExpiresAt: time.Time{}}) {
+		t.Errorf("expected zero ExpiresAt token to be valid")
+	}
+	// Future expiration should be valid
+	if !isTokenValid(&AnilistToken{AccessToken: "valid_token", ExpiresAt: time.Now().Add(1 * time.Hour)}) {
+		t.Errorf("expected future ExpiresAt token to be valid")
+	}
+	// Past expiration should be invalid
+	if isTokenValid(&AnilistToken{AccessToken: "valid_token", ExpiresAt: time.Now().Add(-1 * time.Hour)}) {
+		t.Errorf("expected past ExpiresAt token to be invalid")
+	}
+}

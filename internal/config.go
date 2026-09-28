@@ -5,8 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-
-	// "io"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -302,6 +301,72 @@ func createDefaultConfig(path string) error {
 	return nil
 }
 
+// exchangeAnilistCode exchanges an authorization code for an AniList access token
+func exchangeAnilistCode(code string) (*AnilistToken, error) {
+	tokenURL := fmt.Sprintf("%s/token", anilistOAuthURL)
+	data := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {anilistClientID},
+		"client_secret": {anilistClientSecret},
+		"redirect_uri":  {anilistRedirectURI},
+		"code":          {code},
+	}
+
+	req, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
+
+	client := sharedHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange code for token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read token response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int    `json:"expires_in"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	}
+	if tokenResp.AccessToken == "" {
+		return nil, fmt.Errorf("no access token in response")
+	}
+
+	expiresIn := tokenResp.ExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = 31536000 // default 1 year
+	}
+
+	token := &AnilistToken{
+		AccessToken:  tokenResp.AccessToken,
+		TokenType:    tokenResp.TokenType,
+		ExpiresIn:    expiresIn,
+		RefreshToken: tokenResp.RefreshToken,
+		ExpiresAt:    time.Now().Add(time.Duration(expiresIn) * time.Second),
+	}
+	return token, nil
+}
+
 // authenticateWithBrowser performs OAuth authentication using browser
 func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -315,7 +380,7 @@ func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error)
 	}
 
 	// Start local server to handle OAuth callback
-	callbackCh := make(chan string, 1)
+	callbackCh := make(chan *AnilistToken, 1)
 	errCh := make(chan error, 1)
 	mux := http.NewServeMux()
 	srv := &http.Server{
@@ -323,15 +388,20 @@ func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error)
 		Handler: mux,
 	}
 
-	// Endpoint called by browser JavaScript to deliver the access token from URL hash fragment
+	// Endpoint called by browser JavaScript to deliver an access token if fragment extraction was used
 	mux.HandleFunc("/oauth/save_token", func(w http.ResponseWriter, r *http.Request) {
-		token := cleanAccessToken(r.URL.Query().Get("token"))
-		if token != "" {
+		rawToken := cleanAccessToken(r.URL.Query().Get("token"))
+		if rawToken != "" {
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, "OK")
 			select {
-			case callbackCh <- token:
+			case callbackCh <- &AnilistToken{
+				AccessToken: rawToken,
+				TokenType:   "Bearer",
+				ExpiresIn:   31536000,
+				ExpiresAt:   time.Now().Add(365 * 24 * time.Hour),
+			}:
 			default:
 			}
 			return
@@ -341,8 +411,8 @@ func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error)
 
 	// Handle OAuth callback
 	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
-		errorParam := r.URL.Query().Get("error")
 		w.Header().Set("Content-Type", "text/html")
+		errorParam := r.URL.Query().Get("error")
 
 		if errorParam != "" {
 			w.WriteHeader(http.StatusBadRequest)
@@ -368,57 +438,64 @@ func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error)
 			return
 		}
 
-		// Also support code grant fallback if present
+		// Authorization Code flow
 		if code := r.URL.Query().Get("code"); code != "" {
-			go func() {
-				tokenURL := fmt.Sprintf("%s/token", anilistOAuthURL)
-				data := url.Values{
-					"grant_type":    {"authorization_code"},
-					"client_id":     {anilistClientID},
-					"client_secret": {anilistClientSecret},
-					"redirect_uri":  {anilistRedirectURI},
-					"code":          {code},
-				}
-
-				req, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(data.Encode()))
-				if err != nil {
-					return
-				}
-				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-				req.Header.Set("Accept", "application/json")
-				req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
-
-				client := sharedHTTPClient
-				if client == nil {
-					client = &http.Client{Timeout: 15 * time.Second}
-				}
-				resp, err := client.Do(req)
-				if err != nil {
-					return
-				}
-				defer resp.Body.Close()
-
-				if resp.StatusCode == http.StatusOK {
-					var tokenResponse struct {
-						AccessToken string `json:"access_token"`
-					}
-					if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err == nil && tokenResponse.AccessToken != "" {
-						select {
-						case callbackCh <- tokenResponse.AccessToken:
-						default:
-						}
-					}
-				}
-			}()
-		}
-
-		// Return page that extracts token from hash fragment and sends to /oauth/save_token
-		html := `<!DOCTYPE html>
+			token, err := exchangeAnilistCode(code)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
     <title>Curd Authentication</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #1a1a1a; color: white; }
+        .error { color: #f44336; font-size: 18px; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="error">Token exchange failed: %s</div>
+    <p>You can close this window and try again in Curd.</p>
+</body>
+</html>`, err.Error())
+				fmt.Fprint(w, html)
+				select {
+				case errCh <- fmt.Errorf("failed to exchange code for token: %w", err):
+				default:
+				}
+				return
+			}
+
+			// Show success page
+			html := `<!DOCTYPE html>
+<html>
+<head>
+    <title>Curd Authentication</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #0b1622; color: white; }
+        .success { color: #4CAF50; font-size: 20px; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="success">Authentication Successful!</div>
+    <p>You can close this tab and return to Curd.</p>
+</body>
+</html>`
+			fmt.Fprint(w, html)
+
+			select {
+			case callbackCh <- token:
+			default:
+			}
+			return
+		}
+
+		// Fallback for hash fragment token extraction (if response_type=token redirect was used)
+		html := `<!DOCTYPE html>
+<html>
+<head>
+    <title>Curd Authentication</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #0b1622; color: white; }
         .success { color: #4CAF50; font-size: 20px; margin-bottom: 20px; }
         .loading { color: #2196F3; font-size: 20px; margin-bottom: 20px; }
         .error { color: #f44336; font-size: 20px; margin-bottom: 20px; }
@@ -447,6 +524,10 @@ func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error)
                     document.getElementById('status').className = 'error';
                     document.getElementById('status').innerText = 'Error communicating with Curd.';
                 });
+        } else {
+            document.getElementById('status').className = 'error';
+            document.getElementById('status').innerText = 'No authorization code or token received.';
+            document.getElementById('msg').innerText = 'Please close this tab and try again.';
         }
     </script>
 </body>
@@ -465,8 +546,8 @@ func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error)
 	// Give server a moment to start
 	time.Sleep(100 * time.Millisecond)
 
-	// Open browser for authentication using Implicit Grant flow (response_type=token)
-	authURL := fmt.Sprintf("%s/authorize?client_id=%s&redirect_uri=%s&response_type=token",
+	// Open browser for authentication using Authorization Code flow (response_type=code)
+	authURL := fmt.Sprintf("%s/authorize?client_id=%s&redirect_uri=%s&response_type=code",
 		anilistOAuthURL,
 		anilistClientID,
 		url.QueryEscape(anilistRedirectURI))
@@ -480,21 +561,13 @@ func authenticateWithBrowser(tokenPath string, forceReauth bool) (string, error)
 	}
 
 	// Wait for token
-	var accessToken string
+	var token *AnilistToken
 	select {
-	case accessToken = <-callbackCh:
+	case token = <-callbackCh:
 	case err := <-errCh:
 		return "", fmt.Errorf("authentication failed: %w", err)
 	case <-ctx.Done():
 		return "", fmt.Errorf("authentication timeout after 5 minutes")
-	}
-
-	// Create token object and save
-	token := &AnilistToken{
-		AccessToken: accessToken,
-		TokenType:   "Bearer",
-		ExpiresIn:   31536000, // AniList tokens are valid for 1 year
-		ExpiresAt:   time.Now().Add(365 * 24 * time.Hour),
 	}
 
 	// Save token to file
@@ -538,7 +611,13 @@ func saveToken(tokenPath string, token *AnilistToken) error {
 
 // isTokenValid checks if the token is still valid
 func isTokenValid(token *AnilistToken) bool {
-	return token != nil && token.AccessToken != "" && time.Now().Before(token.ExpiresAt)
+	if token == nil || token.AccessToken == "" {
+		return false
+	}
+	if token.ExpiresAt.IsZero() {
+		return true // If expiration date is not set, consider it valid
+	}
+	return time.Now().Before(token.ExpiresAt)
 }
 
 // GetTokenFromFile loads the token from the token file (supports both old text format and new JSON format)
@@ -575,8 +654,27 @@ func cleanAccessToken(raw string) string {
 		if amp := strings.Index(raw, "&"); amp != -1 {
 			raw = raw[:amp]
 		}
+		if hash := strings.Index(raw, "#"); hash != -1 {
+			raw = raw[:hash]
+		}
 	}
 	return strings.Trim(strings.TrimSpace(raw), "\"'")
+}
+
+// extractCode extracts the authorization code if a full URL or query string was pasted
+func extractCode(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if idx := strings.Index(raw, "code="); idx != -1 {
+		raw = raw[idx+len("code="):]
+		if amp := strings.Index(raw, "&"); amp != -1 {
+			raw = raw[:amp]
+		}
+		if hash := strings.Index(raw, "#"); hash != -1 {
+			raw = raw[:hash]
+		}
+		return strings.Trim(strings.TrimSpace(raw), "\"'")
+	}
+	return ""
 }
 
 func ChangeToken(config *CurdConfig, user *User) {
@@ -592,24 +690,48 @@ func ChangeToken(config *CurdConfig, user *User) {
 		fmt.Printf("Browser authentication failed: %v\n", err)
 		fmt.Println("Falling back to manual token entry...")
 
+		authURL := fmt.Sprintf("%s/authorize?client_id=%s&redirect_uri=%s&response_type=code",
+			anilistOAuthURL,
+			anilistClientID,
+			url.QueryEscape(anilistRedirectURI))
+
 		// Simple CLI fallback
 		fmt.Println("\nTo get your token manually:")
 		fmt.Println("1. Open this URL in your browser:")
-		fmt.Println("   https://anilist.co/api/v2/oauth/authorize?client_id=20686&response_type=token&redirect_uri=http://localhost:8000/oauth/callback")
+		fmt.Printf("   %s\n", authURL)
 		fmt.Println("2. Click 'Authorize'.")
-		fmt.Println("3. Your browser will redirect to a URL like: http://localhost:8000/oauth/callback#access_token=... (it is normal if the page says 'Unable to connect').")
-		fmt.Println("4. Copy the access token (or copy the entire redirect URL from your browser's address bar).")
-		fmt.Print("\nPaste your access token (or redirect URL) here: ")
+		fmt.Println("3. Your browser will redirect to a URL like: http://localhost:8000/oauth/callback?code=... (it is normal if the page says 'Unable to connect').")
+		fmt.Println("4. Copy the entire redirect URL (or authorization code / access token) from your browser's address bar.")
+		fmt.Print("\nPaste your access token, authorization code, or redirect URL here: ")
 
 		reader := bufio.NewReader(os.Stdin)
 		input, _ := reader.ReadString('\n')
-		user.Token = cleanAccessToken(input)
+		rawInput := strings.TrimSpace(input)
+
+		// Check if user pasted a URL or string containing code=
+		if code := extractCode(rawInput); code != "" && !strings.Contains(rawInput, "access_token=") {
+			fmt.Println("Exchanging authorization code for access token...")
+			tok, exErr := exchangeAnilistCode(code)
+			if exErr == nil && tok.AccessToken != "" {
+				user.Token = tok.AccessToken
+				if err := saveToken(tokenPath, tok); err != nil {
+					ExitCurd(fmt.Errorf("failed to save token: %w", err))
+				}
+			} else {
+				if exErr != nil {
+					fmt.Printf("Code exchange failed: %v\n", exErr)
+				}
+				user.Token = cleanAccessToken(rawInput)
+			}
+		} else {
+			user.Token = cleanAccessToken(rawInput)
+		}
 
 		if user.Token == "" {
 			ExitCurd(fmt.Errorf("no token provided"))
 		}
 
-		// Save the manually entered token as JSON format
+		// Save the manually entered token as JSON format if not already saved above
 		token := &AnilistToken{
 			AccessToken: user.Token,
 			TokenType:   "Bearer",
@@ -626,6 +748,7 @@ func ChangeToken(config *CurdConfig, user *User) {
 		ExitCurd(fmt.Errorf("no token provided"))
 	}
 
+	user.AnilistToken = user.Token
 	fmt.Println("Token saved successfully!")
 }
 
