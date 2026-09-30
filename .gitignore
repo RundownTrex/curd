@@ -1,6 +1,36 @@
+# Compiled binaries and release builds
+curd
+curd.exe
+curd-*
+release/
+releases/
+release_assets/
+
+# Binary and library formats
+*.exe
+*.dll
+*.so
+*.dylib
+*.zip
+*.tar.gz
+*.gz
+
+# Go test and coverage artifacts
+*.test
+*.out
+cover.out
+
+# Runtime cache and temporary artifacts
+*rod_profile*
+'$HOME'/
+tmp_ext/
+*.log
+
+# Editor and OS metadata
 .vscode/
 .idea/
 .DS_Store
 *.swp
 *.swo
-curd-android*
+.directory
+*~
