@@ -724,70 +724,134 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 	var animeListOptions []SelectionOption
 	var animeListMapPreview map[string]RofiSelectPreview
 
+	// Ensure secondary tokens are populated if available on disk
+	if user.MalToken == "" {
+		if malTok, mErr := GetMALTokenFromFile(filepath.Join(os.ExpandEnv(userCurdConfig.StoragePath), "mal_token.json")); mErr == nil && malTok != "" {
+			user.MalToken = malTok
+		}
+	}
+	if user.AnilistToken == "" {
+		if aniTok, aErr := GetTokenFromFile(filepath.Join(os.ExpandEnv(userCurdConfig.StoragePath), "anilist_token.json")); aErr == nil && aniTok != "" {
+			user.AnilistToken = aniTok
+		}
+	}
+
+	trackingOffline := false
+
 	// Get user id, username and anime list.
-	// If AniList is temporarily down and MAL is available, fall back for this session.
+	// If the configured tracking service is down or fails, attempt bidirectional fallback.
 	user.Id, user.Username, err = GetUserIDUnified(user.Token, userCurdConfig)
 	if err != nil {
 		Log(fmt.Sprintf("Failed to get user ID: %v", err))
 
 		service := GetTrackingService(userCurdConfig)
-		if service == "anilist" && IsAniListServiceUnavailable(err) {
-			if userCurdConfig.DualTracking && user.MalToken != "" {
-				Log("AniList API is unavailable, falling back to MAL for this session")
-				CurdOut("AniList API is temporarily unavailable. Falling back to MyAnimeList for this session.")
-				userCurdConfig.TrackingService = "mal"
-				userCurdConfig.DualTracking = false
-				user.Token = user.MalToken
+		if service == "anilist" && user.MalToken != "" {
+			Log("AniList API is unavailable, falling back to MAL for this session")
+			CurdOut("AniList API is unavailable. Falling back to MyAnimeList for this session.")
+			userCurdConfig.TrackingService = "mal"
+			userCurdConfig.DualTracking = false
+			user.Token = user.MalToken
 
-				user.Id, user.Username, err = GetUserIDUnified(user.Token, userCurdConfig)
-				if err != nil {
-					Log(fmt.Sprintf("Failed to get user ID after fallback to MAL: %v", err))
-					ExitCurd(fmt.Errorf("AniList is currently unavailable and fallback to MyAnimeList failed: %v", err))
-				}
-			} else {
-				ExitCurd(fmt.Errorf("AniList API is temporarily unavailable right now. Please try again later, or set TrackingService=mal and run `curd -change-mal-token`"))
+			user.Id, user.Username, err = GetUserIDUnified(user.Token, userCurdConfig)
+			if err != nil {
+				Log(fmt.Sprintf("Failed to get user ID after fallback to MAL: %v", err))
 			}
-		} else {
+		} else if (service == "mal" || service == "myanimelist") && user.AnilistToken != "" {
+			Log("MyAnimeList API is unavailable, falling back to AniList for this session")
+			CurdOut("MyAnimeList API is unavailable. Falling back to AniList for this session.")
+			userCurdConfig.TrackingService = "anilist"
+			userCurdConfig.DualTracking = false
+			user.Token = user.AnilistToken
+
+			user.Id, user.Username, err = GetUserIDUnified(user.Token, userCurdConfig)
+			if err != nil {
+				Log(fmt.Sprintf("Failed to get user ID after fallback to AniList: %v", err))
+			}
+		}
+
+		if err != nil {
+			trackingOffline = true
 			serviceName := GetServiceName(userCurdConfig)
-			ExitCurd(fmt.Errorf("Failed to get user ID from %s\nYou can reset the token by running `curd -change-token` or `curd -change-mal-token`", serviceName))
+			Log(fmt.Sprintf("Tracking service %s unavailable: %v. Running in offline/untracked mode.", serviceName, err))
+			CurdOut(fmt.Sprintf("\033[1;33mWarning: Failed to connect to %s (%v)\033[0m", serviceName, err))
+			CurdOut("\033[1;36mStarting Curd in offline mode. You can still download episodes and watch untracked.\033[0m\n")
+			time.Sleep(1500 * time.Millisecond)
 		}
 	}
 
-	// Get the anime list data
-	if userCurdConfig.RofiSelection && userCurdConfig.ImagePreview {
-		anilistUserDataPreview, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, true)
-		if err != nil {
-			Log(fmt.Sprintf("Failed to get user data preview: %v", err))
-			if userCurdConfig.DualTracking && user.MalToken != "" {
-				CurdOut("AniList user data request failed. Falling back to MyAnimeList for this session.")
-				userCurdConfig.TrackingService = "mal"
-				userCurdConfig.DualTracking = false
-				user.Token = user.MalToken
-				user.Id, user.Username, _ = GetUserIDUnified(user.Token, userCurdConfig)
-				anilistUserDataPreview, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, true)
-			}
+	// Get the anime list data only if tracking service connected
+	if !trackingOffline {
+		if userCurdConfig.RofiSelection && userCurdConfig.ImagePreview {
+			anilistUserDataPreview, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, true)
 			if err != nil {
-				ExitCurd(fmt.Errorf("Failed to get user data preview"))
+				Log(fmt.Sprintf("Failed to get user data preview: %v", err))
+				service := GetTrackingService(userCurdConfig)
+				if service == "anilist" && user.MalToken != "" {
+					CurdOut("AniList user data request failed. Falling back to MyAnimeList for this session.")
+					userCurdConfig.TrackingService = "mal"
+					userCurdConfig.DualTracking = false
+					user.Token = user.MalToken
+					user.Id, user.Username, err = GetUserIDUnified(user.Token, userCurdConfig)
+					if err == nil {
+						anilistUserDataPreview, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, true)
+					}
+				} else if (service == "mal" || service == "myanimelist") && user.AnilistToken != "" {
+					CurdOut("MyAnimeList user data request failed. Falling back to AniList for this session.")
+					userCurdConfig.TrackingService = "anilist"
+					userCurdConfig.DualTracking = false
+					user.Token = user.AnilistToken
+					user.Id, user.Username, err = GetUserIDUnified(user.Token, userCurdConfig)
+					if err == nil {
+						anilistUserDataPreview, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, true)
+					}
+				}
+
+				if err != nil {
+					trackingOffline = true
+					Log(fmt.Sprintf("Failed to get user data preview: %v. Continuing in offline mode.", err))
+					CurdOut(fmt.Sprintf("\033[1;33mWarning: Failed to load anime list (%v). Continuing in offline mode.\033[0m\n", err))
+					time.Sleep(1500 * time.Millisecond)
+				}
+			}
+			if !trackingOffline {
+				user.AnimeList = ParseAnimeList(anilistUserDataPreview)
+			}
+		} else {
+			anilistUserData, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, false)
+			if err != nil {
+				Log(fmt.Sprintf("Failed to get user data: %v", err))
+				service := GetTrackingService(userCurdConfig)
+				if service == "anilist" && user.MalToken != "" {
+					CurdOut("AniList user data request failed. Falling back to MyAnimeList for this session.")
+					userCurdConfig.TrackingService = "mal"
+					userCurdConfig.DualTracking = false
+					user.Token = user.MalToken
+					user.Id, user.Username, err = GetUserIDUnified(user.Token, userCurdConfig)
+					if err == nil {
+						anilistUserData, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, false)
+					}
+				} else if (service == "mal" || service == "myanimelist") && user.AnilistToken != "" {
+					CurdOut("MyAnimeList user data request failed. Falling back to AniList for this session.")
+					userCurdConfig.TrackingService = "anilist"
+					userCurdConfig.DualTracking = false
+					user.Token = user.AnilistToken
+					user.Id, user.Username, err = GetUserIDUnified(user.Token, userCurdConfig)
+					if err == nil {
+						anilistUserData, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, false)
+					}
+				}
+
+				if err != nil {
+					trackingOffline = true
+					Log(fmt.Sprintf("Failed to get user data: %v. Continuing in offline mode.", err))
+					CurdOut(fmt.Sprintf("\033[1;33mWarning: Failed to load anime list (%v). Continuing in offline mode.\033[0m\n", err))
+					time.Sleep(1500 * time.Millisecond)
+				}
+			}
+			if !trackingOffline {
+				user.AnimeList = ParseAnimeList(anilistUserData)
 			}
 		}
-		user.AnimeList = ParseAnimeList(anilistUserDataPreview)
-	} else {
-		anilistUserData, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, false)
-		if err != nil {
-			Log(fmt.Sprintf("Failed to get user data: %v", err))
-			if userCurdConfig.DualTracking && user.MalToken != "" {
-				CurdOut("AniList user data request failed. Falling back to MyAnimeList for this session.")
-				userCurdConfig.TrackingService = "mal"
-				userCurdConfig.DualTracking = false
-				user.Token = user.MalToken
-				user.Id, user.Username, _ = GetUserIDUnified(user.Token, userCurdConfig)
-				anilistUserData, err = GetUserDataUnified(user.Token, user.Id, userCurdConfig, false)
-			}
-			if err != nil {
-				ExitCurd(fmt.Errorf("Failed to get user data from %s", GetServiceName(userCurdConfig)))
-			}
-		}
-		user.AnimeList = ParseAnimeList(anilistUserData)
 	}
 
 	// If continueLast flag is set, directly get the last watched anime
@@ -821,20 +885,23 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		// anime.Ep.Resume = true
 
 	} else {
-		// Skip category selection if Current flag is set
+		// Skip category selection if Current flag is set (only when tracking is online)
 		var categorySelection SelectionOption
-		if userCurdConfig.CurrentCategory {
+		if userCurdConfig.CurrentCategory && !trackingOffline {
 			categorySelection = SelectionOption{
 				Key:   "CURRENT",
 				Label: "Currently Watching",
 			}
 		} else {
-			// Create category selection map
-			// Get ordered categories
-			orderedCategories := getOrderedCategories(userCurdConfig)
+			var categories []SelectionOption
+			if trackingOffline {
+				categories = getOfflineCategories(userCurdConfig)
+			} else {
+				categories = getOrderedCategories(userCurdConfig)
+			}
 
-			// Use DynamicSelect with ordered categories directly
-			categorySelection, err = DynamicSelect(orderedCategories)
+			// Use DynamicSelect with categories
+			categorySelection, err = DynamicSelect(categories)
 
 			if err != nil {
 				Log(fmt.Sprintf("Failed to select category: %v", err))
@@ -846,13 +913,23 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 			}
 
 			// Handle options
-			if categorySelection.Key == "PROVIDER" {
+			if categorySelection.Key == "RETRY" {
+				ClearScreen()
+				SetupCurd(userCurdConfig, anime, user, databaseAnimes, databaseFile)
+				return
+			} else if categorySelection.Key == "PROVIDER" {
 				ClearScreen()
 				ChangeProvider(userCurdConfig)
 				ClearScreen()
 				SetupCurd(userCurdConfig, anime, user, databaseAnimes, databaseFile)
 				return
 			} else if categorySelection.Key == "UPDATE" {
+				if trackingOffline {
+					CurdOut("\033[1;33mUpdate requires an active connection to your tracking service.\033[0m\n")
+					time.Sleep(1500 * time.Millisecond)
+					SetupCurd(userCurdConfig, anime, user, databaseAnimes, databaseFile)
+					return
+				}
 				ClearScreen()
 				goBack := UpdateAnimeEntry(userCurdConfig, user)
 				if goBack {
@@ -870,6 +947,9 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 			} else if categorySelection.Key == "UNTRACKED" {
 				ClearScreen()
 				WatchUntracked(userCurdConfig)
+				ClearScreen()
+				SetupCurd(userCurdConfig, anime, user, databaseAnimes, databaseFile)
+				return
 			} else if categorySelection.Key == "CONTINUE_LAST" {
 				anime.Ep.ContinueLast = true
 			}
@@ -915,12 +995,24 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		curdIDBytes, err := os.ReadFile(curdIDPath)
 		if err != nil {
 			Log(fmt.Sprintf("Error reading curd_id file: %v", err))
+			if trackingOffline {
+				CurdOut("No previous session found in curd_id.\n")
+				time.Sleep(1500 * time.Millisecond)
+				SetupCurd(userCurdConfig, anime, user, databaseAnimes, databaseFile)
+				return
+			}
 			ExitCurd(fmt.Errorf("Error reading curd_id file"))
 		}
 
 		lastWatchedID, err := strconv.Atoi(strings.TrimSpace(string(curdIDBytes)))
 		if err != nil {
 			Log(fmt.Sprintf("Error converting curd_id to integer: %v", err))
+			if trackingOffline {
+				CurdOut("Invalid anime ID in curd_id.\n")
+				time.Sleep(1500 * time.Millisecond)
+				SetupCurd(userCurdConfig, anime, user, databaseAnimes, databaseFile)
+				return
+			}
 			ExitCurd(fmt.Errorf("Error converting curd_id to integer"))
 		}
 
@@ -976,7 +1068,7 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		malID := selectedID
 		anilistID, convErr := ConvertMALIDToAnilist(malID, "")
 		if convErr != nil {
-			if IsAniListServiceUnavailable(convErr) {
+			if IsAniListServiceUnavailable(convErr) || trackingOffline {
 				Log(fmt.Sprintf("AniList unavailable while converting MAL ID to AniList ID: %v", convErr))
 				CurdOut("AniList API is temporarily unavailable. Continuing with MyAnimeList IDs for this session.")
 				anime.AnilistId = malID
@@ -992,9 +1084,11 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 		// selectedID is an AniList ID
 		anime.AnilistId = selectedID
 		// try to fetch MAL ID (non-fatal here; main.go may fetch later)
-		malID, _ := GetAnimeMalID(anime.AnilistId)
-		if malID != 0 {
-			anime.MalId = malID
+		if !trackingOffline {
+			malID, _ := GetAnimeMalID(anime.AnilistId)
+			if malID != 0 {
+				anime.MalId = malID
+			}
 		}
 	}
 
@@ -1003,14 +1097,26 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 	selectedAnilistAnime, err := FindAnimeByAnilistID(user.AnimeList, idStrToFind)
 	if err != nil {
 		Log(fmt.Sprintf("Can not find the anime in animelist: %v", err))
-		ExitCurd(fmt.Errorf("Can not find the anime in animelist"))
+		animePointer := LocalFindAnime(*databaseAnimes, anime.AnilistId, "")
+		if animePointer != nil {
+			anime.Title = animePointer.Title
+			anime.TotalEpisodes = animePointer.TotalEpisodes
+			anime.Ep.Number = animePointer.Ep.Number
+			anime.ProviderId = animePointer.ProviderId
+			anime.ProviderName = animePointer.ProviderName
+			anime.Ep.Player.PlaybackTime = animePointer.Ep.Player.PlaybackTime
+			anime.Ep.Duration = animePointer.Ep.Duration
+			anime.Ep.Resume = true
+		} else {
+			ExitCurd(fmt.Errorf("Can not find the anime in animelist or local history"))
+		}
+	} else {
+		// Set anime metadata
+		anime.Title = selectedAnilistAnime.Media.Title
+		anime.TotalEpisodes = selectedAnilistAnime.Media.Episodes
+		anime.CoverImage = selectedAnilistAnime.CoverImage
+		anime.Ep.Number = selectedAnilistAnime.Progress + 1
 	}
-
-	// Set anime metadata
-	anime.Title = selectedAnilistAnime.Media.Title
-	anime.TotalEpisodes = selectedAnilistAnime.Media.Episodes
-	anime.CoverImage = selectedAnilistAnime.CoverImage
-	anime.Ep.Number = selectedAnilistAnime.Progress + 1
 	userQuery = GetAnimeName(*anime)
 	if userQuery == "" {
 		if userCurdConfig.AnimeNameLanguage == "romaji" {

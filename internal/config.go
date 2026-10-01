@@ -837,6 +837,20 @@ func PopulateConfig(configMap map[string]string) CurdConfig {
 	return config
 }
 
+func getOfflineCategories(userCurdConfig *CurdConfig) []SelectionOption {
+	categories := make([]SelectionOption, 0)
+	if userCurdConfig == nil || !userCurdConfig.RofiSelection {
+		categories = append(categories, SelectionOption{Key: "DOWNLOAD", Label: "Download Episodes"})
+	}
+	categories = append(categories,
+		SelectionOption{Key: "UNTRACKED", Label: "Untracked Watching"},
+		SelectionOption{Key: "CONTINUE_LAST", Label: "Continue Last Session (Local History)"},
+		SelectionOption{Key: "PROVIDER", Label: "Change Provider"},
+		SelectionOption{Key: "RETRY", Label: "Retry Tracking Connection"},
+	)
+	return categories
+}
+
 func getOrderedCategories(userCurdConfig *CurdConfig) []SelectionOption {
 	isRofi := userCurdConfig != nil && userCurdConfig.RofiSelection
 

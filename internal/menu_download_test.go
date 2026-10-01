@@ -51,3 +51,31 @@ func TestGetOrderedCategoriesRofiAndTerminal(t *testing.T) {
 		t.Errorf("expected DOWNLOAD to be automatically appended for old configs in terminal menu")
 	}
 }
+
+func TestGetOfflineCategories(t *testing.T) {
+	// 1. Terminal mode: DOWNLOAD must be present as the first option
+	termConfig := &CurdConfig{RofiSelection: false}
+	cats := getOfflineCategories(termConfig)
+	if len(cats) == 0 || cats[0].Key != "DOWNLOAD" {
+		t.Fatalf("expected DOWNLOAD to be first offline category in terminal mode, got %v", cats)
+	}
+
+	keys := make(map[string]bool)
+	for _, c := range cats {
+		keys[c.Key] = true
+	}
+	for _, expected := range []string{"DOWNLOAD", "UNTRACKED", "CONTINUE_LAST", "PROVIDER", "RETRY"} {
+		if !keys[expected] {
+			t.Errorf("expected %s in offline categories, but missing", expected)
+		}
+	}
+
+	// 2. Rofi mode: DOWNLOAD must be absent
+	rofiConfig := &CurdConfig{RofiSelection: true}
+	rofiCats := getOfflineCategories(rofiConfig)
+	for _, c := range rofiCats {
+		if c.Key == "DOWNLOAD" {
+			t.Errorf("expected DOWNLOAD to be excluded in rofi offline menu")
+		}
+	}
+}

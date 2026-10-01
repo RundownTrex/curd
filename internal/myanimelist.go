@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -105,6 +106,137 @@ func generateCodeChallenge(verifier string) string {
 	return verifier
 }
 
+// getMALHTTPClient returns a shared or configured HTTP client with appropriate timeouts
+func getMALHTTPClient() *http.Client {
+	if sharedHTTPClient != nil {
+		return sharedHTTPClient
+	}
+	return &http.Client{Timeout: 15 * time.Second}
+}
+
+// cleanMALToken extracts the token if a full URL, JSON, or fragment was pasted
+func cleanMALToken(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if idx := strings.Index(raw, "access_token="); idx != -1 {
+		raw = raw[idx+len("access_token="):]
+		if amp := strings.Index(raw, "&"); amp != -1 {
+			raw = raw[:amp]
+		}
+		if hash := strings.Index(raw, "#"); hash != -1 {
+			raw = raw[:hash]
+		}
+	}
+	return strings.Trim(strings.TrimSpace(raw), "\"'")
+}
+
+// extractMALCode extracts the authorization code if a full URL or query string was pasted
+func extractMALCode(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if idx := strings.Index(raw, "code="); idx != -1 {
+		raw = raw[idx+len("code="):]
+		if amp := strings.Index(raw, "&"); amp != -1 {
+			raw = raw[:amp]
+		}
+		if hash := strings.Index(raw, "#"); hash != -1 {
+			raw = raw[:hash]
+		}
+		return strings.Trim(strings.TrimSpace(raw), "\"'")
+	}
+	return ""
+}
+
+// exchangeMALCode exchanges an authorization code and PKCE verifier for a MAL access token with retry support
+func exchangeMALCode(code, codeVerifier string) (*MALToken, error) {
+	tokenURL := fmt.Sprintf("%s/token", malOAuthURL)
+	data := url.Values{
+		"client_id":     {malClientID},
+		"client_secret": {malClientSecret},
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {malRedirectURI},
+		"code_verifier": {codeVerifier},
+	}
+
+	maxRetries := 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		req, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(data.Encode()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create token request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
+
+		client := getMALHTTPClient()
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt*500) * time.Millisecond)
+				continue
+			}
+			return nil, fmt.Errorf("failed to exchange code for token after %d attempts: %w", maxRetries, err)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt*500) * time.Millisecond)
+				continue
+			}
+			return nil, fmt.Errorf("failed to read token response: %w", err)
+		}
+
+		// Retry on transient server errors (502, 503, 504)
+		if resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504 {
+			lastErr = fmt.Errorf("server returned status %d: %s", resp.StatusCode, string(body))
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt*500) * time.Millisecond)
+				continue
+			}
+			return nil, lastErr
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var tokenResp struct {
+			AccessToken  string `json:"access_token"`
+			TokenType    string `json:"token_type"`
+			ExpiresIn    int    `json:"expires_in"`
+			RefreshToken string `json:"refresh_token"`
+		}
+		if err := json.Unmarshal(body, &tokenResp); err != nil {
+			return nil, fmt.Errorf("failed to parse token response: %w", err)
+		}
+
+		if tokenResp.AccessToken == "" {
+			return nil, fmt.Errorf("no access token in response")
+		}
+
+		expiresIn := tokenResp.ExpiresIn
+		if expiresIn <= 0 {
+			expiresIn = 2592000 // default 30 days
+		}
+
+		token := &MALToken{
+			AccessToken:  tokenResp.AccessToken,
+			TokenType:    tokenResp.TokenType,
+			ExpiresIn:    expiresIn,
+			RefreshToken: tokenResp.RefreshToken,
+			ExpiresAt:    time.Now().Add(time.Duration(expiresIn) * time.Second),
+		}
+		return token, nil
+	}
+
+	return nil, lastErr
+}
+
 // authenticateWithBrowserMAL performs OAuth authentication using browser
 func authenticateWithBrowserMAL(tokenPath string, forceReauth bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -122,7 +254,7 @@ func authenticateWithBrowserMAL(tokenPath string, forceReauth bool) (string, err
 	codeChallenge := generateCodeChallenge(codeVerifier)
 
 	// Start local server to handle OAuth callback
-	callbackCh := make(chan string, 1)
+	callbackCh := make(chan *MALToken, 1)
 	errCh := make(chan error, 1)
 	mux := http.NewServeMux()
 	srv := &http.Server{
@@ -132,10 +264,8 @@ func authenticateWithBrowserMAL(tokenPath string, forceReauth bool) (string, err
 
 	// Handle OAuth callback
 	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
-		code := r.URL.Query().Get("code")
-		errorParam := r.URL.Query().Get("error")
-
 		w.Header().Set("Content-Type", "text/html")
+		errorParam := r.URL.Query().Get("error")
 
 		if errorParam != "" {
 			w.WriteHeader(http.StatusBadRequest)
@@ -154,10 +284,14 @@ func authenticateWithBrowserMAL(tokenPath string, forceReauth bool) (string, err
 </body>
 </html>`, errorParam)
 			fmt.Fprint(w, html)
-			errCh <- fmt.Errorf("oauth error: %s", errorParam)
+			select {
+			case errCh <- fmt.Errorf("oauth error: %s", errorParam):
+			default:
+			}
 			return
 		}
 
+		code := r.URL.Query().Get("code")
 		if code == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			html := `<!DOCTYPE html>
@@ -175,71 +309,70 @@ func authenticateWithBrowserMAL(tokenPath string, forceReauth bool) (string, err
 </body>
 </html>`
 			fmt.Fprint(w, html)
-			errCh <- fmt.Errorf("no authorization code received")
+			select {
+			case errCh <- fmt.Errorf("no authorization code received"):
+			default:
+			}
 			return
 		}
 
-		// Exchange authorization code for access token
-		go func() {
-			tokenURL := fmt.Sprintf("%s/token", malOAuthURL)
-			data := url.Values{
-				"client_id":     {malClientID},
-				"client_secret": {malClientSecret},
-				"grant_type":    {"authorization_code"},
-				"code":          {code},
-				"redirect_uri":  {malRedirectURI},
-				"code_verifier": {codeVerifier},
+		// Exchange authorization code for access token synchronously with retries
+		token, err := exchangeMALCode(code, codeVerifier)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+    <title>Curd MAL Authentication</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #2e51a2; color: white; }
+        .error { color: #f44336; font-size: 18px; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="error">Token exchange failed: %s</div>
+    <p>You can close this window and try again in Curd.</p>
+</body>
+</html>`, err.Error())
+			fmt.Fprint(w, html)
+			select {
+			case errCh <- fmt.Errorf("failed to exchange code for token: %w", err):
+			default:
 			}
+			return
+		}
 
-			resp, err := http.PostForm(tokenURL, data)
-			if err != nil {
-				errCh <- fmt.Errorf("failed to exchange code for token: %w", err)
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(resp.Body)
-				errCh <- fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, string(body))
-				return
-			}
-
-			var tokenResponse MALToken
-			if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
-				errCh <- fmt.Errorf("failed to parse token response: %w", err)
-				return
-			}
-
-			if tokenResponse.AccessToken == "" {
-				errCh <- fmt.Errorf("no access token in response")
-				return
-			}
-
-			callbackCh <- tokenResponse.AccessToken
-		}()
-
-		// Show success page immediately
+		// Show success page
+		w.WriteHeader(http.StatusOK)
 		html := `<!DOCTYPE html>
 <html>
 <head>
     <title>Curd MAL Authentication</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #2e51a2; color: white; }
-        .loading { color: #4CAF50; font-size: 18px; margin-bottom: 20px; }
+        .success { color: #4CAF50; font-size: 20px; margin-bottom: 20px; }
     </style>
 </head>
 <body>
-    <div class="loading">Processing authentication...</div>
-    <p>Exchanging authorization code for token. You can close this window.</p>
+    <div class="success">Authentication Successful!</div>
+    <p>You can close this tab and return to Curd.</p>
 </body>
 </html>`
 		fmt.Fprint(w, html)
+
+		select {
+		case callbackCh <- token:
+		default:
+		}
 	})
 
 	// Start server in background
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- fmt.Errorf("failed to start server: %w", err)
+			select {
+			case errCh <- fmt.Errorf("failed to start server: %w", err):
+			default:
+			}
 		}
 	}()
 	defer srv.Shutdown(ctx)
@@ -263,21 +396,13 @@ func authenticateWithBrowserMAL(tokenPath string, forceReauth bool) (string, err
 	}
 
 	// Wait for token
-	var accessToken string
+	var token *MALToken
 	select {
-	case accessToken = <-callbackCh:
+	case token = <-callbackCh:
 	case err := <-errCh:
 		return "", fmt.Errorf("authentication failed: %w", err)
 	case <-ctx.Done():
 		return "", fmt.Errorf("authentication timeout after 5 minutes")
-	}
-
-	// Create token object and save
-	token := &MALToken{
-		AccessToken: accessToken,
-		TokenType:   "Bearer",
-		ExpiresIn:   2592000, // MAL tokens are valid for 30 days
-		ExpiresAt:   time.Now().Add(30 * 24 * time.Hour),
 	}
 
 	// Save token to file
@@ -321,7 +446,13 @@ func saveMALToken(tokenPath string, token *MALToken) error {
 
 // isMALTokenValid checks if the token is still valid
 func isMALTokenValid(token *MALToken) bool {
-	return token != nil && token.AccessToken != "" && time.Now().Before(token.ExpiresAt)
+	if token == nil || token.AccessToken == "" {
+		return false
+	}
+	if token.ExpiresAt.IsZero() {
+		return true // If expiration date is not set, consider it valid
+	}
+	return time.Now().Before(token.ExpiresAt)
 }
 
 // GetMALTokenFromFile loads the token from the token file
@@ -355,7 +486,63 @@ func ChangeMALToken(config *CurdConfig, user *User) {
 	if err != nil {
 		Log("MAL browser authentication failed: " + err.Error())
 		fmt.Printf("MAL browser authentication failed: %v\n", err)
-		ExitCurd(fmt.Errorf("MAL authentication failed"))
+		fmt.Println("Falling back to manual token entry...")
+
+		// Generate a fresh PKCE verifier and challenge for manual auth
+		manualVerifier := generateCodeVerifier()
+		manualChallenge := generateCodeChallenge(manualVerifier)
+		authURL := fmt.Sprintf("%s/authorize?response_type=code&client_id=%s&redirect_uri=%s&code_challenge=%s&code_challenge_method=plain",
+			malOAuthURL,
+			malClientID,
+			url.QueryEscape(malRedirectURI),
+			manualChallenge)
+
+		fmt.Println("\nTo get your MyAnimeList token manually:")
+		fmt.Println("1. Open this URL in your browser:")
+		fmt.Printf("   %s\n", authURL)
+		fmt.Println("2. Log in and click 'Allow'.")
+		fmt.Println("3. Your browser will redirect to a URL like: http://localhost:8888/oauth/callback?code=... (it is completely normal if the page says 'Unable to connect' or 'Site can't be reached').")
+		fmt.Println("4. Copy the entire redirect URL (or authorization code / access token) from your browser's address bar.")
+		fmt.Print("\nPaste your access token, authorization code, or redirect URL here: ")
+
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		rawInput := strings.TrimSpace(input)
+
+		// Check if user pasted a URL or string containing code=
+		if code := extractMALCode(rawInput); code != "" && !strings.Contains(rawInput, "access_token=") {
+			fmt.Println("Exchanging authorization code for access token...")
+			tok, exErr := exchangeMALCode(code, manualVerifier)
+			if exErr == nil && tok.AccessToken != "" {
+				user.Token = tok.AccessToken
+				if err := saveMALToken(tokenPath, tok); err != nil {
+					ExitCurd(fmt.Errorf("failed to save token: %w", err))
+				}
+			} else {
+				if exErr != nil {
+					fmt.Printf("Code exchange failed: %v\n", exErr)
+				}
+				user.Token = cleanMALToken(rawInput)
+			}
+		} else {
+			user.Token = cleanMALToken(rawInput)
+		}
+
+		if user.Token == "" {
+			ExitCurd(fmt.Errorf("no MAL token provided"))
+		}
+
+		// Save the manually entered token as JSON format if not already saved above
+		token := &MALToken{
+			AccessToken: user.Token,
+			TokenType:   "Bearer",
+			ExpiresIn:   2592000, // MAL tokens are valid for 30 days
+			ExpiresAt:   time.Now().Add(30 * 24 * time.Hour),
+		}
+
+		if err := saveMALToken(tokenPath, token); err != nil {
+			ExitCurd(fmt.Errorf("failed to save token: %w", err))
+		}
 	}
 
 	if user.Token == "" {
@@ -375,8 +562,9 @@ func GetMALUserInfo(token string) (int, string, error) {
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
 
-	client := &http.Client{}
+	client := getMALHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, "", fmt.Errorf("failed to make request: %w", err)
@@ -414,8 +602,9 @@ func GetMALUserAnimeList(token string) (map[string]interface{}, error) {
 		}
 
 		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
 
-		client := &http.Client{}
+		client := getMALHTTPClient()
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to make request: %w", err)
@@ -522,8 +711,9 @@ func SearchAnimeMAL(query, token string) ([]SelectionOption, error) {
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
 
-	client := &http.Client{}
+	client := getMALHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request: %w", err)
@@ -593,8 +783,9 @@ func SearchAnimeMALPreview(query, token string) (map[string]RofiSelectPreview, e
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
 
-	client := &http.Client{}
+	client := getMALHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request: %w", err)
@@ -678,8 +869,9 @@ func UpdateMALAnimeProgress(token string, mediaID, progress int) error {
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
 
-	client := &http.Client{}
+	client := getMALHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
@@ -744,8 +936,9 @@ func UpdateMALAnimeStatus(token string, mediaID int, status string) error {
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
 
-	client := &http.Client{}
+	client := getMALHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
@@ -811,8 +1004,9 @@ func RateAnimeMAL(token string, mediaID int) error {
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
 
-	client := &http.Client{}
+	client := getMALHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
@@ -847,8 +1041,9 @@ func AddAnimeToMALWatchingList(animeID int, token string) error {
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
 
-	client := &http.Client{}
+	client := getMALHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
@@ -874,8 +1069,9 @@ func GetMALAnimeDetails(malID int, token string) (Anime, error) {
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
 
-	client := &http.Client{}
+	client := getMALHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return Anime{}, fmt.Errorf("failed to make request: %w", err)
@@ -943,11 +1139,12 @@ func ConvertMALIDToAnilist(malID int, token string) (int, error) {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{}
+	client := getMALHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("failed to send request: %w", err)

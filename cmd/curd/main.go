@@ -228,6 +228,19 @@ func main() {
 		}
 	} else {
 		internal.Log("Dual tracking is disabled in config")
+		// Load secondary token if available on disk for tracking fallback
+		if user.MalToken == "" {
+			if malTok, mErr := internal.GetMALTokenFromFile(filepath.Join(os.ExpandEnv(userCurdConfig.StoragePath), "mal_token.json")); mErr == nil && malTok != "" {
+				user.MalToken = malTok
+				internal.Log("Loaded MAL token from disk for service fallback")
+			}
+		}
+		if user.AnilistToken == "" {
+			if aniTok, aErr := internal.GetTokenFromFile(filepath.Join(os.ExpandEnv(userCurdConfig.StoragePath), "anilist_token.json")); aErr == nil && aniTok != "" {
+				user.AnilistToken = aniTok
+				internal.Log("Loaded AniList token from disk for service fallback")
+			}
+		}
 	}
 
 	if userCurdConfig.RofiSelection {
