@@ -101,7 +101,7 @@ func senshiStreamCandidates(item embedItem) []string {
 }
 
 func senshiStreamReachable(streamURL string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)

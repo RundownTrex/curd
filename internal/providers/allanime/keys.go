@@ -64,6 +64,17 @@ func invalidateAllanimeKeys() {
 	cachedKeys = nil
 }
 
+// WarmKeys pre-fetches and caches the allanime decryption keys so that the
+// first real episode request doesn't have to wait for them.
+// It is safe to call multiple times; subsequent calls are no-ops when the
+// cache is still warm.
+func WarmKeys() {
+	if _, err := getAllanimeKeys(); err != nil {
+		// Non-fatal: the main path will retry on demand.
+		return
+	}
+}
+
 func httpClient() *http.Client {
 	if curdhost.HTTPClient != nil {
 		if c := curdhost.HTTPClient(); c != nil {

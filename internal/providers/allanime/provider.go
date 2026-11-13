@@ -31,3 +31,8 @@ func (p *Provider) GetEpisodeURLForMode(config providers.PlaybackConfig, id stri
 func (p *Provider) GetEpisodeURLForModeWithHints(config providers.PlaybackConfig, id string, epNo int, mode string) ([]string, map[string]providers.StreamPlaybackHint, error) {
 	return getAllanimeEpisodeStreamsForMode(id, mode, epNo)
 }
+
+// WarmCache pre-populates the allanime decryption key cache in the background.
+func (p *Provider) WarmCache() {
+	WarmKeys()
+}

@@ -44,3 +44,11 @@ type HintResolver interface {
 type IDResolver interface {
 	ResolveProviderID(providerID, query string) (string, error)
 }
+
+// CacheWarmer is an optional provider interface. Providers that maintain
+// internal caches (e.g. encryption keys, session tokens) can implement
+// WarmCache to pre-populate those caches asynchronously on startup so that
+// the first real episode request doesn't pay the full cold-start penalty.
+type CacheWarmer interface {
+	WarmCache()
+}

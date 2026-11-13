@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 var (
@@ -15,6 +17,18 @@ var (
 	dataNumberRE = regexp.MustCompile(`data-number=["']([^"']+)["']`)
 	dataIDRE     = regexp.MustCompile(`data-id=["']([0-9]+)["']`)
 	epTitleRE    = regexp.MustCompile(`title=["']([^"']+)["']`)
+)
+
+// hianimeEpisodesCacheEntry stores a parsed episode list for one show.
+type hianimeEpisodesCacheEntry struct {
+	entries   []episodeEntry
+	fetchedAt time.Time
+}
+
+var (
+	hianimeEpisodesCache   = map[string]*hianimeEpisodesCacheEntry{}
+	hianimeEpisodesCacheMu sync.Mutex
+	hianimeEpisodesTTL     = 15 * time.Minute
 )
 
 func extractAnimeID(showID string) string {
@@ -28,11 +42,21 @@ func extractAnimeID(showID string) string {
 	return showID
 }
 
+// fetchEpisodeEntries returns the episode list for a show, using an in-memory
+// cache so the list endpoint is only hit once per session per show.
 func fetchEpisodeEntries(showID string) ([]episodeEntry, error) {
 	showID = strings.TrimSpace(showID)
 	if showID == "" {
 		return nil, fmt.Errorf("empty show id")
 	}
+
+	hianimeEpisodesCacheMu.Lock()
+	if e, ok := hianimeEpisodesCache[showID]; ok && time.Since(e.fetchedAt) < hianimeEpisodesTTL {
+		entries := e.entries
+		hianimeEpisodesCacheMu.Unlock()
+		return entries, nil
+	}
+	hianimeEpisodesCacheMu.Unlock()
 
 	animeID := extractAnimeID(showID)
 	if animeID == "" {
@@ -106,6 +130,13 @@ func fetchEpisodeEntries(showID string) ([]episodeEntry, error) {
 	if len(entries) == 0 {
 		return nil, fmt.Errorf("no valid episode entries parsed for %s", showID)
 	}
+
+	hianimeEpisodesCacheMu.Lock()
+	hianimeEpisodesCache[showID] = &hianimeEpisodesCacheEntry{
+		entries:   entries,
+		fetchedAt: time.Now(),
+	}
+	hianimeEpisodesCacheMu.Unlock()
 
 	return entries, nil
 }

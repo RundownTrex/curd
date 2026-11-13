@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/wraient/curd/internal/curdhost"
 )
@@ -22,11 +24,30 @@ type anidbEpisodesResponse struct {
 	Episodes []anidbEpisodeItem `json:"episodes"`
 }
 
-func getAllAnimeEpisodesList(showID, mode string) ([]string, error) {
-	numericID := extractNumericID(showID)
-	if numericID == "" {
-		return nil, fmt.Errorf("invalid show id %q", showID)
+// anidbEpisodesCache caches the full episode list per numeric anime ID so
+// that both EpisodesList() and the stream resolver never hit the same
+// endpoint twice for the same session.
+type anidbEpisodesCacheEntry struct {
+	items     []anidbEpisodeItem
+	fetchedAt time.Time
+}
+
+var (
+	anidbEpisodesCache   = map[string]*anidbEpisodesCacheEntry{}
+	anidbEpisodesCacheMu sync.Mutex
+	anidbEpisodesTTL     = 15 * time.Minute
+)
+
+// fetchAnidbEpisodeItems fetches (or returns a cached copy of) the full
+// episode list for a given numeric anime ID.
+func fetchAnidbEpisodeItems(numericID string) ([]anidbEpisodeItem, error) {
+	anidbEpisodesCacheMu.Lock()
+	if e, ok := anidbEpisodesCache[numericID]; ok && time.Since(e.fetchedAt) < anidbEpisodesTTL {
+		items := e.items
+		anidbEpisodesCacheMu.Unlock()
+		return items, nil
 	}
+	anidbEpisodesCacheMu.Unlock()
 
 	episodesURL := fmt.Sprintf("%s/api/frontend/anime/%s/episodes", anidbBaseURL, numericID)
 	req, err := http.NewRequest("GET", episodesURL, nil)
@@ -54,12 +75,33 @@ func getAllAnimeEpisodesList(showID, mode string) ([]string, error) {
 	if err := json.Unmarshal(body, &res); err != nil {
 		return nil, fmt.Errorf("parse anidb episodes response: %w", err)
 	}
-	if len(res.Episodes) == 0 {
+
+	anidbEpisodesCacheMu.Lock()
+	anidbEpisodesCache[numericID] = &anidbEpisodesCacheEntry{
+		items:     res.Episodes,
+		fetchedAt: time.Now(),
+	}
+	anidbEpisodesCacheMu.Unlock()
+
+	return res.Episodes, nil
+}
+
+func getAllAnimeEpisodesList(showID, mode string) ([]string, error) {
+	numericID := extractNumericID(showID)
+	if numericID == "" {
+		return nil, fmt.Errorf("invalid show id %q", showID)
+	}
+
+	episodes, err := fetchAnidbEpisodeItems(numericID)
+	if err != nil {
+		return nil, err
+	}
+	if len(episodes) == 0 {
 		return nil, fmt.Errorf("no episodes found for anime %s", showID)
 	}
 
 	var numbers []int
-	for _, ep := range res.Episodes {
+	for _, ep := range episodes {
 		if ep.Number > 0 {
 			numbers = append(numbers, ep.Number)
 		}

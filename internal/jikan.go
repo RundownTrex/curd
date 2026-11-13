@@ -5,11 +5,53 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
-// GetEpisodeData fetches episode data for a given anime ID and episode number
+// episodeDataCacheKey uniquely identifies a (malID, episodeNo) pair.
+type episodeDataCacheKey struct {
+	malID     int
+	episodeNo int
+}
+
+// episodeDataCacheEntry holds the fields populated by GetEpisodeData.
+type episodeDataCacheEntry struct {
+	titleRomaji  string
+	titleEnglish string
+	titleJapanese string
+	aired        string
+	duration     int
+	isFiller     bool
+	isRecap      bool
+	synopsis     string
+}
+
+var (
+	episodeDataCache   = map[episodeDataCacheKey]*episodeDataCacheEntry{}
+	episodeDataCacheMu sync.Mutex
+)
+
+// GetEpisodeData fetches episode data for a given anime ID and episode number.
+// Results are cached in memory so repeated calls for the same episode are free.
 func GetEpisodeData(animeID int, episodeNo int, anime *Anime) error {
+	key := episodeDataCacheKey{malID: animeID, episodeNo: episodeNo}
+
+	episodeDataCacheMu.Lock()
+	if cached, ok := episodeDataCache[key]; ok {
+		episodeDataCacheMu.Unlock()
+		anime.Ep.Title.Romaji = cached.titleRomaji
+		anime.Ep.Title.English = cached.titleEnglish
+		anime.Ep.Title.Japanese = cached.titleJapanese
+		anime.Ep.Aired = cached.aired
+		anime.Ep.Duration = cached.duration
+		anime.Ep.IsFiller = cached.isFiller
+		anime.Ep.IsRecap = cached.isRecap
+		anime.Ep.Synopsis = cached.synopsis
+		return nil
+	}
+	episodeDataCacheMu.Unlock()
+
 	url := fmt.Sprintf("https://api.jikan.moe/v4/anime/%d/episodes/%d", animeID, episodeNo)
 
 	// Use the helper function for making the GET request
@@ -66,6 +108,20 @@ func GetEpisodeData(animeID int, episodeNo int, anime *Anime) error {
 	anime.Ep.IsFiller = getBoolValue("filler")
 	anime.Ep.IsRecap = getBoolValue("recap")
 	anime.Ep.Synopsis = getStringValue("synopsis")
+
+	// Cache the result so subsequent calls for the same episode are free.
+	episodeDataCacheMu.Lock()
+	episodeDataCache[key] = &episodeDataCacheEntry{
+		titleRomaji:   anime.Ep.Title.Romaji,
+		titleEnglish:  anime.Ep.Title.English,
+		titleJapanese: anime.Ep.Title.Japanese,
+		aired:         anime.Ep.Aired,
+		duration:      anime.Ep.Duration,
+		isFiller:      anime.Ep.IsFiller,
+		isRecap:       anime.Ep.IsRecap,
+		synopsis:      anime.Ep.Synopsis,
+	}
+	episodeDataCacheMu.Unlock()
 
 	return nil
 }

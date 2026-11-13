@@ -150,6 +150,21 @@ func Referrer(name string) string {
 	return meta.Referrer
 }
 
+// WarmCaches calls WarmCache on every registered provider that implements
+// the CacheWarmer interface. Each provider's warm-up runs in its own
+// goroutine so the caller is never blocked.
+func WarmCaches() {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+
+	for _, e := range registry {
+		p := e.factory()
+		if warmer, ok := p.(CacheWarmer); ok {
+			go warmer.WarmCache()
+		}
+	}
+}
+
 // SetFactoryForTest overrides a provider factory for the duration of a test.
 func SetFactoryForTest(name string, factory func() Provider) (restore func()) {
 	registryMu.Lock()

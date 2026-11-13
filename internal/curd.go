@@ -1467,9 +1467,12 @@ episodeLinksReady:
 	}
 
 	// Modify the goroutine in main.go where next episode links are fetched
-	// Get next episode link in parallel
+	// Get next episode link in parallel (if not already fetched)
 	go func() {
 		nextEpNum := anime.Ep.Number + 1
+		if anime.Ep.NextEpisode.Number == nextEpNum && len(anime.Ep.NextEpisode.Links) > 0 {
+			return
+		}
 		if nextEpNum <= anime.TotalEpisodes {
 			// Get next canon episode number if filler skip is enabled
 			if userCurdConfig.SkipFiller && IsEpisodeFiller(anime.FillerEpisodes, anime.Ep.Number) {

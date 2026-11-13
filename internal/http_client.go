@@ -29,9 +29,10 @@ func init() {
 	jar, _ := cookiejar.New(nil)
 	sharedHTTPClient = &http.Client{
 		Transport: &http.Transport{
-			MaxIdleConns:        10,
-			MaxIdleConnsPerHost: 5,
-			IdleConnTimeout:     30 * time.Second,
+			MaxIdleConns:        50,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+			DisableCompression:  false,
 		},
 		Timeout: 15 * time.Second,
 		Jar:     jar,

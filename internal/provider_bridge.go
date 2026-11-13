@@ -74,6 +74,12 @@ func alternateTranslationType(mode string) string {
 	return providers.AlternateTranslationType(mode)
 }
 
+// WarmProviderCaches triggers background cache pre-warming for all registered
+// providers that support it (e.g. allanime key derivation). It is non-blocking.
+func WarmProviderCaches() {
+	providers.WarmCaches()
+}
+
 func toInternalSelectionOptions(options []providers.SelectionOption) []SelectionOption {
 	if len(options) == 0 {
 		return nil

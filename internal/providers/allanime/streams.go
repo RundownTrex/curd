@@ -30,36 +30,16 @@ func getAllanimeEpisodeStreamsForMode(id, mode string, epNo int) ([]string, map[
 		return nil, nil, fmt.Errorf("invalid show id %q", id)
 	}
 
-	// 1. Fetch episodes list to find internal ep ID
-	episodesURL := fmt.Sprintf("%s/api/frontend/anime/%s/episodes", anidbBaseURL, numericID)
-	req1, err := http.NewRequest("GET", episodesURL, nil)
+	// 1. Fetch (or return cached) episode list to find internal ep ID.
+	//    fetchAnidbEpisodeItems caches the response so EpisodesList() and
+	//    this function never both pay the HTTP round-trip cost.
+	episodes, err := fetchAnidbEpisodeItems(numericID)
 	if err != nil {
-		return nil, nil, err
-	}
-	req1.Header.Set("User-Agent", anidbUserAgent)
-	req1.Header.Set("Referer", anidbBaseURL+"/")
-
-	resp1, err := httpClient().Do(req1)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer resp1.Body.Close()
-
-	body1, err := io.ReadAll(resp1.Body)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !curdhost.HTTPStatusOK(resp1.StatusCode) {
-		return nil, nil, curdhost.HTTPStatusError("anidb episodes", resp1.StatusCode, body1)
-	}
-
-	var epRes anidbEpisodesResponse
-	if err := json.Unmarshal(body1, &epRes); err != nil {
 		return nil, nil, err
 	}
 
 	var targetEpID int
-	for _, ep := range epRes.Episodes {
+	for _, ep := range episodes {
 		if ep.Number == epNo {
 			targetEpID = ep.ID
 			break
@@ -147,39 +127,9 @@ func getAllanimeEpisodeStreamsForMode(id, mode string, epNo int) ([]string, map[
 
 	masterURL := match[1]
 
-	// 4. Fetch master.m3u8 playlist to extract quality variant URLs
-	req4, err := http.NewRequest("GET", masterURL, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	req4.Header.Set("User-Agent", anidbUserAgent)
-	req4.Header.Set("Referer", anidbBaseURL+"/")
-
-	resp4, err := httpClient().Do(req4)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer resp4.Body.Close()
-
-	body4, err := io.ReadAll(resp4.Body)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	links := []string{masterURL}
 	hints := map[string]providers.StreamPlaybackHint{
 		masterURL: {Referrer: anidbBaseURL + "/"},
-	}
-
-	if curdhost.HTTPStatusOK(resp4.StatusCode) {
-		lines := strings.Split(string(body4), "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
-				links = append(links, line)
-				hints[line] = providers.StreamPlaybackHint{Referrer: anidbBaseURL + "/"}
-			}
-		}
 	}
 
 	return links, hints, nil

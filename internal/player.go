@@ -419,7 +419,13 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 
 	// Prepare arguments for mpv-compatible players.
 	var mpvArgs []string
-	mpvArgs = append(mpvArgs, "--no-terminal", "--really-quiet", fmt.Sprintf("--input-ipc-server=%s", mpvSocketPath))
+	mpvArgs = append(mpvArgs,
+		"--no-terminal",
+		"--really-quiet",
+		fmt.Sprintf("--input-ipc-server=%s", mpvSocketPath),
+		"--demuxer-lavf-analyzeduration=1",
+		"--demuxer-lavf-probesize=1048576",
+	)
 	// Add any additional arguments passed
 	if len(args) > 0 {
 		mpvArgs = append(mpvArgs, args...)
@@ -464,13 +470,11 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 
 	// Wait for the socket to become available with retries
 	socketReady := false
-	maxRetries := 10
-	retryDelay := 300 * time.Millisecond
+	maxRetries := 40
+	retryDelay := 50 * time.Millisecond
 
 	Log(fmt.Sprintf("Waiting for MPV socket to be ready at %s", mpvSocketPath))
 	for i := 0; i < maxRetries; i++ {
-		time.Sleep(retryDelay)
-
 		// Try to connect to the socket
 		conn, err := connectToPipe(mpvSocketPath)
 		if err == nil {
@@ -480,7 +484,7 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 			break
 		}
 
-		Log(fmt.Sprintf("Attempt %d/%d - Socket not ready yet: %v", i+1, maxRetries, err))
+		time.Sleep(retryDelay)
 	}
 
 	if !socketReady {
@@ -521,18 +525,19 @@ func MPVSendCommand(ipcSocketPath string, command []interface{}) (interface{}, e
 			Log(fmt.Sprintf("Connect error (attempt %d/%d): %v", attempt+1, maxRetries, err))
 			continue // Try again
 		}
-		defer conn.Close()
 
 		commandStr, err := json.Marshal(map[string]interface{}{
 			"command": command,
 		})
 		if err != nil {
+			conn.Close()
 			return nil, err // Don't retry on JSON marshalling errors
 		}
 
 		// Send the command
 		_, err = conn.Write(append(commandStr, '\n'))
 		if err != nil {
+			conn.Close()
 			lastErr = err
 			Log(fmt.Sprintf("Write error (attempt %d/%d): %v", attempt+1, maxRetries, err))
 			continue // Try again
@@ -546,21 +551,50 @@ func MPVSendCommand(ipcSocketPath string, command []interface{}) (interface{}, e
 		}
 
 		n, err := conn.Read(buf)
+		conn.Close()
 		if err != nil {
 			lastErr = err
 			Log(fmt.Sprintf("Read error (attempt %d/%d): %v", attempt+1, maxRetries, err))
 			continue // Try again
 		}
 
+		// MPV can send multiple JSON lines (e.g. unsolicited property-change events followed by command response)
+		lines := strings.Split(string(buf[:n]), "\n")
 		var response map[string]interface{}
-		if err := json.Unmarshal(buf[:n], &response); err != nil {
-			lastErr = err
-			Log(fmt.Sprintf("JSON parse error (attempt %d/%d): %v", attempt+1, maxRetries, err))
-			continue // Try again
+		foundResponse := false
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var parsed map[string]interface{}
+			if err := json.Unmarshal([]byte(line), &parsed); err == nil {
+				// Command responses contain "error" field; events contain "event" field.
+				if _, hasError := parsed["error"]; hasError {
+					response = parsed
+					foundResponse = true
+					break
+				}
+				if _, hasData := parsed["data"]; hasData {
+					response = parsed
+					foundResponse = true
+					break
+				}
+			}
+		}
+
+		if !foundResponse {
+			lastErr = fmt.Errorf("no command response found in MPV output: %s", string(buf[:n]))
+			Log(fmt.Sprintf("JSON parse error (attempt %d/%d): %v", attempt+1, maxRetries, lastErr))
+			continue
 		}
 
 		data, responseErr := mpvResponseData(response)
 		if responseErr != nil {
+			// If MPV says property is unavailable (e.g. video loading), do not retry — it's not a socket failure.
+			if strings.Contains(responseErr.Error(), "property unavailable") {
+				return nil, responseErr
+			}
 			lastErr = responseErr
 			Log(fmt.Sprintf("MPV command error (attempt %d/%d): %v", attempt+1, maxRetries, responseErr))
 			continue

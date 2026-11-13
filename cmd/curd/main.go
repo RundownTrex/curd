@@ -272,6 +272,10 @@ func main() {
 	internal.SetupCurd(&userCurdConfig, &anime, &user, &databaseAnimes, databaseFile)
 	trackingService = internal.GetTrackingService(&userCurdConfig)
 
+	// Pre-warm provider caches (e.g. allanime key derivation) in the background
+	// so the first episode request doesn't pay the full cold-start penalty.
+	internal.WarmProviderCaches()
+
 	// Find anime in user's list using the correct ID based on tracking service
 	var idToFind string
 	if trackingService == "mal" || trackingService == "myanimelist" {
@@ -355,105 +359,137 @@ func main() {
 		}
 
 		if !retryProvider {
-			// Ensure MalId and CoverImage are populated if discord presence is enabled
-			if userCurdConfig.DiscordPresence {
-				if anime.CoverImage == "" || anime.MalId == 0 {
-					if anime.AnilistId != 0 {
-						malID, imgURL, fetchErr := internal.GetAnimeIDAndImage(anime.AnilistId)
-						if fetchErr != nil {
-							internal.Log("Error getting anime ID and image from AniList: " + fetchErr.Error())
-						} else {
-							if anime.CoverImage == "" && imgURL != "" {
-								anime.CoverImage = imgURL
-							}
-							if anime.MalId == 0 && malID != 0 {
-								anime.MalId = malID
+			// Populate Discord presence assets (MalId and CoverImage) in the background
+			// so slow AniList/Jikan network queries do not block episode link fetching.
+			go func() {
+				if userCurdConfig.DiscordPresence {
+					if anime.CoverImage == "" || anime.MalId == 0 {
+						if anime.AnilistId != 0 {
+							malID, imgURL, fetchErr := internal.GetAnimeIDAndImage(anime.AnilistId)
+							if fetchErr != nil {
+								internal.Log("Error getting anime ID and image from AniList: " + fetchErr.Error())
+							} else {
+								if anime.CoverImage == "" && imgURL != "" {
+									anime.CoverImage = imgURL
+								}
+								if anime.MalId == 0 && malID != 0 {
+									anime.MalId = malID
+								}
 							}
 						}
 					}
-				}
 
-				// If CoverImage is still empty and we have a MAL ID, attempt fallback to Jikan
-				if anime.CoverImage == "" && anime.MalId != 0 {
-					if pictures, pErr := internal.FetchJikanPictures(anime.MalId); pErr == nil && len(pictures) > 0 {
-						anime.CoverImage = pictures[0]
-						internal.Log("Fetched cover image from Jikan: " + anime.CoverImage)
+					// If CoverImage is still empty and we have a MAL ID, attempt fallback to Jikan
+					if anime.CoverImage == "" && anime.MalId != 0 {
+						if pictures, pErr := internal.FetchJikanPictures(anime.MalId); pErr == nil && len(pictures) > 0 {
+							anime.CoverImage = pictures[0]
+							internal.Log("Fetched cover image from Jikan: " + anime.CoverImage)
+						}
+					}
+
+					if (trackingService == "mal" || trackingService == "myanimelist") && anime.MalId == 0 {
+						anime.MalId = anime.AnilistId
+					}
+					internal.Log("Discord presence assets loaded in background")
+				} else if anime.MalId == 0 {
+					if trackingService == "mal" || trackingService == "myanimelist" {
+						anime.MalId = anime.AnilistId
+					} else if anime.AnilistId != 0 {
+						malID, malErr := internal.GetAnimeMalID(anime.AnilistId)
+						if malErr != nil {
+							internal.Log("Error getting anime MAL ID: " + malErr.Error())
+						} else if malID != 0 {
+							anime.MalId = malID
+						}
 					}
 				}
+			}()
 
-				if (trackingService == "mal" || trackingService == "myanimelist") && anime.MalId == 0 {
-					anime.MalId = anime.AnilistId
-				}
-				// Skip initial Discord presence - wait for MPV to provide real duration
-				// This avoids showing the default 25-minute duration before the video starts
-				internal.Log("Waiting for MPV to start to get actual video duration before showing Discord presence")
-			} else if anime.MalId == 0 {
-				if trackingService == "mal" || trackingService == "myanimelist" {
-					anime.MalId = anime.AnilistId
-				} else if anime.AnilistId != 0 {
-					malID, malErr := internal.GetAnimeMalID(anime.AnilistId)
-					if malErr != nil {
-						internal.Log("Error getting anime MAL ID: " + malErr.Error())
-					} else if malID != 0 {
-						anime.MalId = malID
-					}
-				}
-			}
-
-			// Skip filler/recap loop
-			for {
-				err = internal.GetEpisodeData(anime.MalId, anime.Ep.Number, &anime)
-				if err != nil {
+			// Fetch episode metadata (title, filler, recap) concurrently with link
+			// resolution so the Jikan RTT doesn't block playback start.
+			// epDataReady is closed when the data is available (or failed).
+			epDataReady := make(chan struct{})
+			go func(malID, epNo int) {
+				defer close(epDataReady)
+				t0 := time.Now()
+				if err := internal.GetEpisodeData(malID, epNo, &anime); err != nil {
 					internal.Log("Error getting episode data, assuming non-filler: " + err.Error())
-					break
 				}
+				internal.Log(fmt.Sprintf("[timing] GetEpisodeData took %v", time.Since(t0)))
+			}(anime.MalId, anime.Ep.Number)
 
-				anime.Ep.IsFiller = internal.IsEpisodeFiller(anime.FillerEpisodes, anime.Ep.Number)
+			// Skip filler/recap loop — waits for the metadata goroutine only when
+			// SkipFiller or SkipRecap is actually enabled (rare path).
+			if userCurdConfig.SkipFiller || userCurdConfig.SkipRecap {
+				<-epDataReady // block only when we actually need the filler flag
+				for {
+					anime.Ep.IsFiller = internal.IsEpisodeFiller(anime.FillerEpisodes, anime.Ep.Number)
 
-				if !((anime.Ep.IsFiller && userCurdConfig.SkipFiller) || (anime.Ep.IsRecap && userCurdConfig.SkipRecap)) {
-					if anime.Ep.LastWasSkipped && !anime.Rewatching {
+					if !((anime.Ep.IsFiller && userCurdConfig.SkipFiller) || (anime.Ep.IsRecap && userCurdConfig.SkipRecap)) {
+						if anime.Ep.LastWasSkipped && !anime.Rewatching {
+							go internal.UpdateAnimeProgressDual(user.AnilistToken, user.MalToken, anime.AnilistId, anime.MalId, anime.Ep.Number-1, &userCurdConfig)
+						}
+						break
+					}
+
+					if anime.Ep.IsFiller && userCurdConfig.SkipFiller {
+						internal.CurdOut(fmt.Sprint("Filler episode, skipping: ", anime.Ep.Number))
+						anime.Ep.Number = internal.GetNextCanonEpisode(anime.FillerEpisodes, anime.Ep.Number)
+					} else {
+						internal.CurdOut(fmt.Sprint("Recap episode, skipping: ", anime.Ep.Number))
+						anime.Ep.Number++
+					}
+
+					anime.Ep.LastWasSkipped = true
+					anime.Ep.Started = false
+					internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, 0, 0, internal.GetAnimeName(anime), anime.ProviderName)
+
+					if !anime.Rewatching {
 						go internal.UpdateAnimeProgressDual(user.AnilistToken, user.MalToken, anime.AnilistId, anime.MalId, anime.Ep.Number-1, &userCurdConfig)
 					}
-					break
-				}
 
-				if anime.Ep.IsFiller && userCurdConfig.SkipFiller {
-					internal.CurdOut(fmt.Sprint("Filler episode, skipping: ", anime.Ep.Number))
-					anime.Ep.Number = internal.GetNextCanonEpisode(anime.FillerEpisodes, anime.Ep.Number)
-				} else {
-					internal.CurdOut(fmt.Sprint("Recap episode, skipping: ", anime.Ep.Number))
-					anime.Ep.Number++
-				}
+					if anime.Ep.Number > anime.TotalEpisodes {
+						internal.CurdOut("Reached end of series")
+						internal.ExitCurd(nil)
+					}
 
-				anime.Ep.LastWasSkipped = true
-				anime.Ep.Started = false
-				internal.LocalUpdateAnime(databaseFile, anime.AnilistId, anime.ProviderId, anime.Ep.Number, 0, 0, internal.GetAnimeName(anime), anime.ProviderName)
-
-				if !anime.Rewatching {
-					go internal.UpdateAnimeProgressDual(user.AnilistToken, user.MalToken, anime.AnilistId, anime.MalId, anime.Ep.Number-1, &userCurdConfig)
-				}
-
-				if anime.Ep.Number > anime.TotalEpisodes {
-					internal.CurdOut("Reached end of series")
-					internal.ExitCurd(nil)
+					// Fetch new episode data for the skipped-to episode
+					if err := internal.GetEpisodeData(anime.MalId, anime.Ep.Number, &anime); err != nil {
+						internal.Log("Error getting episode data, assuming non-filler: " + err.Error())
+						break
+					}
 				}
 			}
 
 			// Fetch links if not already set
 			if len(anime.Ep.Links) == 0 {
-				// Wait up to 5s for prefetched links
-				for i := 0; i < 5; i++ {
-					if anime.Ep.NextEpisode.Number == anime.Ep.Number && len(anime.Ep.NextEpisode.Links) > 0 && anime.Ep.NextEpisode.ProviderName == anime.ProviderName {
+				// Check immediately if prefetch is ready; only wait up to 3s if it
+				// looks like prefetching is in progress for exactly this episode.
+				t0Link := time.Now()
+				prefetchTarget := anime.Ep.Number
+				prefetchFound := false
+				for i := 0; i < 3; i++ {
+					if anime.Ep.NextEpisode.Number == prefetchTarget && len(anime.Ep.NextEpisode.Links) > 0 && anime.Ep.NextEpisode.ProviderName == anime.ProviderName {
+						internal.Log(fmt.Sprintf("[timing] Used prefetched link after %v", time.Since(t0Link)))
 						internal.Log("Using prefetched next episode link")
 						anime.Ep.Links = anime.Ep.NextEpisode.Links
 						internal.ApplyStreamPlaybackHints(&anime, anime.Ep.Links, anime.Ep.NextEpisode.LinkHints)
+						prefetchFound = true
 						break
+					}
+					// Only keep waiting if a prefetch goroutine could conceivably still
+					// be running for this episode (i.e. not on the very first episode).
+					if i == 0 && anime.Ep.NextEpisode.Number != prefetchTarget {
+						break // No prefetch in-flight for this episode — skip the wait.
 					}
 					time.Sleep(1 * time.Second)
 				}
+				_ = prefetchFound
 
 				if len(anime.Ep.Links) == 0 {
+					t0Resolve := time.Now()
 					result, err := internal.ResolveEpisodeURLForPlayback(userCurdConfig, &anime, anime.Ep.Number)
+					internal.Log(fmt.Sprintf("[timing] ResolveEpisodeURLForPlayback took %v", time.Since(t0Resolve)))
 					if err != nil {
 						internal.Log("Failed to get episode links: " + err.Error())
 						internal.CurdOut(fmt.Sprintf("Failed to get episode links: %v", err))
@@ -706,6 +742,60 @@ func main() {
 			}
 			internal.Log(anime.Ep.SkipTimes)
 		}()
+
+		// Background prefetch of the next episode's stream URL.
+		// We wait until playback actually starts (Ep.Started), then fire off a
+		// resolve request so the link is ready by the time the current episode
+		// finishes. The result is stored in anime.Ep.NextEpisode; the main loop
+		// checks it before doing a blocking resolve.
+		go func(capturedEpNo int, capturedConfig internal.CurdConfig, capturedAnime internal.Anime) {
+			nextEpNo := capturedEpNo + 1
+			if capturedAnime.TotalEpisodes > 0 && nextEpNo > capturedAnime.TotalEpisodes {
+				return // Nothing to prefetch; already at the last episode.
+			}
+
+			// Wait up to 30 s for the episode to actually start before prefetching
+			// so we don't hammer the provider immediately on launch.
+			started := false
+			for i := 0; i < 30; i++ {
+				if anime.Ep.Started {
+					started = true
+					break
+				}
+				time.Sleep(1 * time.Second)
+			}
+			if !started {
+				return
+			}
+
+			// Don't prefetch if we already have a valid result for this episode.
+			if anime.Ep.NextEpisode.Number == nextEpNo &&
+				len(anime.Ep.NextEpisode.Links) > 0 &&
+				anime.Ep.NextEpisode.ProviderName == capturedAnime.ProviderName {
+				return
+			}
+
+			internal.Log(fmt.Sprintf("Prefetching next episode %d in background", nextEpNo))
+			result, err := internal.ResolveEpisodeURLForPlayback(capturedConfig, &capturedAnime, nextEpNo)
+			if err != nil || len(result.Links) == 0 {
+				internal.Log(fmt.Sprintf("Prefetch for episode %d failed: %v", nextEpNo, err))
+				return
+			}
+
+			// Guard: only store the result if the user is still on the same
+			// episode we prefetched for (they might have skipped ahead).
+			if anime.Ep.Number == capturedEpNo {
+				anime.Ep.NextEpisode = internal.NextEpisode{
+					Number:       nextEpNo,
+					Links:        result.Links,
+					ProviderName: result.ProviderName,
+					ProviderId:   result.ProviderID,
+					Mode:         result.Mode,
+					LinkHints:    result.LinkHints,
+				}
+				internal.Log(fmt.Sprintf("Prefetch complete: episode %d ready", nextEpNo))
+			}
+		}(anime.Ep.Number, userCurdConfig, anime)
 
 		// Get video duration
 		go func() {

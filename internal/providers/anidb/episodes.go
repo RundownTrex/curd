@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/wraient/curd/internal/curdhost"
 )
@@ -18,11 +20,25 @@ type anidbEpisodeItem struct {
 	Filler  bool `json:"filler"`
 }
 
-func getAniDBEpisodesList(showID, mode string) ([]string, error) {
-	numericID := extractNumericID(showID)
-	if numericID == "" {
-		return nil, fmt.Errorf("invalid show id %q", showID)
+type anidbEpisodesCacheEntry struct {
+	items     []anidbEpisodeItem
+	fetchedAt time.Time
+}
+
+var (
+	anidbEpisodesCache   = map[string]*anidbEpisodesCacheEntry{}
+	anidbEpisodesCacheMu sync.Mutex
+	anidbEpisodesTTL     = 15 * time.Minute
+)
+
+func fetchAnidbEpisodeItems(numericID string) ([]anidbEpisodeItem, error) {
+	anidbEpisodesCacheMu.Lock()
+	if e, ok := anidbEpisodesCache[numericID]; ok && time.Since(e.fetchedAt) < anidbEpisodesTTL {
+		items := e.items
+		anidbEpisodesCacheMu.Unlock()
+		return items, nil
 	}
+	anidbEpisodesCacheMu.Unlock()
 
 	episodesURL := fmt.Sprintf("%s/api/frontend/anime/%s/episodes", anidbBaseURL, numericID)
 	req, err := http.NewRequest("GET", episodesURL, nil)
@@ -56,6 +72,27 @@ func getAniDBEpisodesList(showID, mode string) ([]string, error) {
 		} else {
 			return nil, fmt.Errorf("parse anidb episodes response: %w", err)
 		}
+	}
+
+	anidbEpisodesCacheMu.Lock()
+	anidbEpisodesCache[numericID] = &anidbEpisodesCacheEntry{
+		items:     episodes,
+		fetchedAt: time.Now(),
+	}
+	anidbEpisodesCacheMu.Unlock()
+
+	return episodes, nil
+}
+
+func getAniDBEpisodesList(showID, mode string) ([]string, error) {
+	numericID := extractNumericID(showID)
+	if numericID == "" {
+		return nil, fmt.Errorf("invalid show id %q", showID)
+	}
+
+	episodes, err := fetchAnidbEpisodeItems(numericID)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(episodes) == 0 {

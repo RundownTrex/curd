@@ -122,6 +122,7 @@ func validateHLSStream(masterURL string) error {
 			adInfected++
 		} else {
 			healthy++
+			break
 		}
 	}
 
