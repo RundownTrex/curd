@@ -274,6 +274,7 @@ func TestLiveHiAnimeFlow(t *testing.T) {
 	if slug == "" {
 		t.Fatalf("expected non-empty key in search result")
 	}
+	t.Logf("Search result options[0]: Key=%s Title=%s", slug, options[0].Title)
 
 	// 2. Episode list
 	episodes, err := p.EpisodesList(slug, "sub")
@@ -285,12 +286,36 @@ func TestLiveHiAnimeFlow(t *testing.T) {
 	}
 
 	// 3. Resolve episode 1 stream
-	links, err := p.GetEpisodeURL(providers.PlaybackConfig{SubOrDub: "sub"}, slug, 1)
+	hintResolver, ok := p.(providers.HintResolver)
+	if !ok {
+		t.Fatalf("expected provider to implement HintResolver")
+	}
+	links, hints, err := hintResolver.GetEpisodeURLForModeWithHints(providers.PlaybackConfig{SubOrDub: "sub"}, slug, 1, "sub")
 	if err != nil {
 		t.Fatalf("live stream resolution failed: %v", err)
 	}
 	if len(links) == 0 {
 		t.Fatalf("expected at least 1 stream link for episode 1")
 	}
+	t.Logf("Resolved links: %v", links)
+	t.Logf("Resolved hints: %+v", hints)
 }
+
+func TestResolveMegaplayStream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live network test in short mode")
+	}
+
+	if curdhost.HTTPClient == nil {
+		curdhost.HTTPClient = func() *http.Client { return &http.Client{} }
+	}
+
+	streamURL, hint, err := resolveMegaplayStream("https://megaplay.buzz/stream/s-2/107257/sub?s=tcdn", "sub")
+	if err != nil {
+		t.Fatalf("resolveMegaplayStream failed: %v", err)
+	}
+	t.Logf("Megaplay resolved streamURL: %s", streamURL)
+	t.Logf("Megaplay resolved hint: %+v", hint)
+}
+
 

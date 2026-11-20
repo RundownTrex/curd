@@ -131,6 +131,13 @@ func PrepareAndroidPlaybackURL(anime *Anime, link string) (string, error) {
 					origin = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
 				}
 			}
+		} else if providerName == "hianime" || strings.Contains(cleanLink, "dramahot.top") || strings.Contains(cleanLink, "drama1.cfd") || strings.Contains(cleanLink, "zokoanime.") {
+			origin = "https://zokoanime.video"
+			if referrer != "" {
+				if u, err := url.Parse(referrer); err == nil && u.Scheme != "" && u.Host != "" {
+					origin = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
+				}
+			}
 		}
 	}
 

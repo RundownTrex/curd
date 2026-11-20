@@ -217,6 +217,17 @@ func hasMPVSubtitleArg(args []string) bool {
 	return false
 }
 
+func hasMPVUserAgentArg(args []string) bool {
+	for _, arg := range args {
+		lower := strings.ToLower(strings.TrimSpace(arg))
+		if strings.HasPrefix(lower, "--user-agent=") || lower == "--user-agent" ||
+			strings.HasPrefix(lower, "--mpv-user-agent=") || lower == "--mpv-user-agent" {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeReferrerValue(referrer string) string {
 	referrer = strings.TrimSpace(referrer)
 	if referrer == "" {
@@ -299,16 +310,19 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 	}
 	args = normalizeReferrerArgs(args)
 
-	// Provider-specific adjustments for KickAssAnime / krussdomi streams:
-	// 1. Krussdomi CDN segments require an Origin header matching the player origin to avoid HTTP 403.
-	// 2. Krussdomi uses .jpg for HLS video chunks, requiring allowed_segment_extensions=ALL and extension_picky=0.
+	// Provider-specific adjustments for KickAssAnime / krussdomi, MegaPlay, and HiAnime / ZokoAnime streams:
+	// 1. Krussdomi / HiAnime CDN segments require an Origin header matching the player origin to avoid HTTP 403.
+	// 2. Krussdomi and HiAnime (dramahot / drama1) use .jpg for HLS video chunks, requiring allowed_segment_extensions=ALL and extension_picky=0.
 	providerName := strings.ToLower(CurrentAnimeProviderName(anime))
 	isKickAss := providerName == "kickassanime" || strings.Contains(link, "krussdomi.com")
 	isMegaPlay := providerName == "megaplay" || strings.Contains(link, "nexabloom.top") || strings.Contains(link, "solarhaven.top")
-	if isKickAss || isMegaPlay {
+	isHiAnime := providerName == "hianime" || strings.Contains(link, "dramahot.top") || strings.Contains(link, "drama1.cfd") || strings.Contains(link, "zokoanime.")
+	if isKickAss || isMegaPlay || isHiAnime {
 		origin := "https://krussdomi.com"
 		if isMegaPlay {
 			origin = "https://megaplay.buzz"
+		} else if isHiAnime {
+			origin = "https://zokoanime.video"
 		}
 		if referrer != "" {
 			if u, err := url.Parse(referrer); err == nil && u.Scheme != "" && u.Host != "" {
@@ -319,6 +333,9 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 			fmt.Sprintf("--http-header-fields=Origin: %s", origin),
 			"--demuxer-lavf-o=allowed_segment_extensions=ALL,extension_picky=0",
 		)
+		if isHiAnime && !hasMPVUserAgentArg(args) {
+			args = append(args, "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
+		}
 	}
 
 	// Check if we have an existing socket and if MPV is still running
@@ -326,10 +343,12 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 		// Reuse existing socket
 		mpvSocketPath = anime.Ep.Player.SocketPath
 
-		if isKickAss || isMegaPlay {
+		if isKickAss || isMegaPlay || isHiAnime {
 			origin := "https://krussdomi.com"
 			if isMegaPlay {
 				origin = "https://megaplay.buzz"
+			} else if isHiAnime {
+				origin = "https://zokoanime.video"
 			}
 			activeRef := strings.TrimSpace(anime.Ep.StreamReferrer)
 			if activeRef != "" {
@@ -339,6 +358,9 @@ func StartVideo(link string, args []string, title string, anime *Anime) (string,
 			}
 			_, _ = MPVSendCommand(mpvSocketPath, []interface{}{"set_property", "http-header-fields", fmt.Sprintf("Origin: %s", origin)})
 			_, _ = MPVSendCommand(mpvSocketPath, []interface{}{"set_property", "demuxer-lavf-o", "allowed_segment_extensions=ALL,extension_picky=0"})
+			if isHiAnime {
+				_, _ = MPVSendCommand(mpvSocketPath, []interface{}{"set_property", "user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"})
+			}
 		}
 
 		if shouldSetDefaultReferrer {

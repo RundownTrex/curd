@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -168,6 +169,13 @@ func DownloadMenu(userCurdConfig *CurdConfig) {
 		origin := ""
 		if strings.EqualFold(anime.ProviderName, "kickassanime") || strings.Contains(selectedLink, "krussdomi.com") {
 			origin = "https://krussdomi.com"
+		} else if strings.EqualFold(anime.ProviderName, "hianime") || strings.Contains(selectedLink, "dramahot.top") || strings.Contains(selectedLink, "drama1.cfd") || strings.Contains(selectedLink, "zokoanime.") {
+			origin = "https://zokoanime.video"
+			if ref != "" {
+				if u, err := url.Parse(ref); err == nil && u.Scheme != "" && u.Host != "" {
+					origin = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
+				}
+			}
 		}
 
 		concurrency := userCurdConfig.DownloadConcurrency
